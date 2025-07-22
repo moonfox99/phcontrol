@@ -1,279 +1,208 @@
 #!/usr/bin/env python3
 """
-Панель браузера зображень з вертикальними мініатюрами
+Панель браузера зображень з мініатюрами
+Відображає список зображень з візуальними індикаторами статусу обробки
 """
 
 import os
-from typing import List, Optional, Set
+from typing import List, Optional, Set, Dict
 from PyQt5.QtWidgets import (QWidget, QVBoxLayout, QScrollArea, QLabel, 
-                             QFrame, QSizePolicy)
-from PyQt5.QtCore import Qt, pyqtSignal, QSize, QTimer
-from PyQt5.QtGui import QPixmap, QFont, QCursor
+                             QFrame, QPushButton, QSizePolicy, QHBoxLayout)
+from PyQt5.QtCore import Qt, QSize, pyqtSignal, QThread, pyqtSlot, QTimer
+from PyQt5.QtGui import QPixmap, QFont, QPainter, QPen, QBrush, QColor
 
-from core.constants import UI
+from core.constants import UI, IMAGE
 from utils.file_utils import is_image_file
 
 
-class ThumbnailLabel(QLabel):
+class ImageThumbnailWidget(QFrame):
     """
-    Інтерактивна мініатюра зображення з підтримкою станів
+    Віджет мініатюри зображення з індикаторами статусу
+    
+    Статуси:
+    - normal: звичайне зображення (сірий бордер)
+    - selected: вибране зображення (синій бордер)
+    - processed: оброблене зображення (зелений бордер)
+    - error: помилка завантаження (червоний бордер)
     """
     
-    clicked = pyqtSignal(str)  # Сигнал з шляхом до файлу
+    clicked = pyqtSignal(str)  # Клік по мініатюрі
     
-    def __init__(self, image_path: str, width: int = 240, height: int = 180):
-        super().__init__()
+    def __init__(self, image_path: str, parent=None):
+        super().__init__(parent)
         
         self.image_path = image_path
-        self.is_processed = False
+        self.filename = os.path.basename(image_path)
+        self.status = 'normal'
         self.is_selected = False
         
-        # Налаштування розміру
-        self.setFixedSize(width, height)
-        self.setAlignment(Qt.AlignCenter)
-        self.setCursor(QCursor(Qt.PointingHandCursor))
+        # Налаштування розмірів
+        self.thumbnail_size = QSize(UI.THUMBNAIL_SIZE, UI.THUMBNAIL_SIZE)
+        self.setFixedSize(UI.THUMBNAIL_WIDTH, UI.THUMBNAIL_HEIGHT)
         
-        # Завантаження та масштабування зображення
-        self.load_and_scale_image(width, height)
+        # Налаштування стилів
+        self.setFrameStyle(QFrame.Box)
+        self.setLineWidth(2)
+        self.setCursor(Qt.PointingHandCursor)
         
-        # Встановлення початкового стилю
+        self.init_ui()
         self.update_style()
+        
+        # Асинхронне завантаження мініатюри
+        QTimer.singleShot(0, self.load_thumbnail)
     
-    def load_and_scale_image(self, width: int, height: int):
-        """Завантаження та масштабування зображення"""
+    def init_ui(self):
+        """Ініціалізація інтерфейсу"""
+        layout = QVBoxLayout()
+        layout.setContentsMargins(4, 4, 4, 4)
+        layout.setSpacing(2)
+        self.setLayout(layout)
+        
+        # Мініатюра зображення
+        self.image_label = QLabel()
+        self.image_label.setAlignment(Qt.AlignCenter)
+        self.image_label.setMinimumSize(self.thumbnail_size)
+        self.image_label.setMaximumSize(self.thumbnail_size)
+        self.image_label.setStyleSheet("""
+            QLabel {
+                background-color: #f0f0f0;
+                border: 1px solid #ddd;
+                border-radius: 3px;
+            }
+        """)
+        layout.addWidget(self.image_label)
+        
+        # Назва файлу
+        self.filename_label = QLabel(self.filename)
+        self.filename_label.setFont(QFont("Arial", 8))
+        self.filename_label.setAlignment(Qt.AlignCenter)
+        self.filename_label.setWordWrap(True)
+        self.filename_label.setMaximumHeight(30)
+        self.filename_label.setStyleSheet("""
+            QLabel {
+                color: #333;
+                background: none;
+                border: none;
+                padding: 1px;
+            }
+        """)
+        layout.addWidget(self.filename_label)
+        
+        # Індикатор статусу
+        self.status_label = QLabel("●")
+        self.status_label.setFont(QFont("Arial", 12))
+        self.status_label.setAlignment(Qt.AlignCenter)
+        self.status_label.setMaximumHeight(16)
+        layout.addWidget(self.status_label)
+    
+    def load_thumbnail(self):
+        """Завантаження мініатюри зображення"""
         try:
+            if not os.path.exists(self.image_path):
+                self.set_status('error')
+                self.image_label.setText("Файл\nне знайдено")
+                return
+            
+            # Завантаження зображення
             pixmap = QPixmap(self.image_path)
-            if not pixmap.isNull():
-                # Масштабування з збереженням пропорцій
-                scaled_pixmap = pixmap.scaled(
-                    width - 4, height - 4,  # Відступ для рамки
-                    Qt.KeepAspectRatio,
-                    Qt.SmoothTransformation
-                )
-                self.setPixmap(scaled_pixmap)
-            else:
-                # Помилка завантаження
-                self.setText(f"Помилка\n{os.path.basename(self.image_path)}")
-                self.setFont(QFont("Arial", 10))
-                
+            
+            if pixmap.isNull():
+                self.set_status('error')
+                self.image_label.setText("Помилка\nзавантаження")
+                return
+            
+            # Масштабування зображення з збереженням пропорцій
+            scaled_pixmap = pixmap.scaled(
+                self.thumbnail_size,
+                Qt.KeepAspectRatio,
+                Qt.SmoothTransformation
+            )
+            
+            self.image_label.setPixmap(scaled_pixmap)
+            
         except Exception as e:
-            # Обробка виключень
-            self.setText(f"Помилка\n{os.path.basename(self.image_path)}")
-            self.setFont(QFont("Arial", 10))
-            print(f"Помилка завантаження мініатюри {self.image_path}: {e}")
+            print(f"❌ Помилка завантаження мініатюри {self.filename}: {e}")
+            self.set_status('error')
+            self.image_label.setText("Помилка")
     
-    def update_style(self):
-        """Оновлення стилю залежно від стану"""
-        if self.is_selected:
-            # Обране зображення - синя товста рамка
-            self.setStyleSheet("""
-                QLabel {
-                    border: 4px solid #007bff;
-                    border-radius: 8px;
-                    background-color: #e3f2fd;
-                    padding: 2px;
-                    margin: 2px;
-                }
-            """)
-        elif self.is_processed:
-            # Оброблене зображення - зелена рамка
-            self.setStyleSheet("""
-                QLabel {
-                    border: 3px solid #28a745;
-                    border-radius: 8px;
-                    background-color: #d4f6d4;
-                    padding: 2px;
-                    margin: 2px;
-                }
-                QLabel:hover {
-                    border: 3px solid #218838;
-                    background-color: #c3e6cb;
-                }
-            """)
-        else:
-            # Звичайне зображення
-            self.setStyleSheet("""
-                QLabel {
-                    border: 1px solid #dee2e6;
-                    border-radius: 8px;
-                    background-color: white;
-                    padding: 2px;
-                    margin: 2px;
-                }
-                QLabel:hover {
-                    border: 2px solid #6c757d;
-                    background-color: #f8f9fa;
-                }
-            """)
-    
-    def set_processed(self, processed: bool):
-        """Встановлення стану обробки"""
-        self.is_processed = processed
+    def set_status(self, status: str):
+        """Встановлення статусу мініатюри"""
+        self.status = status
         self.update_style()
     
     def set_selected(self, selected: bool):
-        """Встановлення стану виділення"""
+        """Встановлення стану вибору"""
         self.is_selected = selected
         self.update_style()
     
+    def update_style(self):
+        """Оновлення стилів в залежності від статусу"""
+        # Кольори бордерів
+        border_colors = {
+            'normal': '#dee2e6',
+            'selected': '#007bff',
+            'processed': '#28a745',
+            'error': '#dc3545'
+        }
+        
+        # Кольори індикаторів
+        indicator_colors = {
+            'normal': '#6c757d',
+            'selected': '#007bff',
+            'processed': '#28a745',
+            'error': '#dc3545'
+        }
+        
+        # Отримання кольорів
+        border_color = border_colors.get(self.status, '#dee2e6')
+        indicator_color = indicator_colors.get(self.status, '#6c757d')
+        
+        # Якщо вибрано, використовуємо синій колір
+        if self.is_selected:
+            border_color = border_colors['selected']
+            indicator_color = indicator_colors['selected']
+        
+        # Застосування стилів
+        self.setStyleSheet(f"""
+            QFrame {{
+                border: 2px solid {border_color};
+                border-radius: 6px;
+                background-color: white;
+            }}
+            QFrame:hover {{
+                border: 2px solid {indicator_color};
+                background-color: #f8f9fa;
+            }}
+        """)
+        
+        self.status_label.setStyleSheet(f"""
+            QLabel {{
+                color: {indicator_color};
+                background: none;
+                border: none;
+            }}
+        """)
+    
     def mousePressEvent(self, event):
-        """Обробка кліка миші"""
+        """Обробка кліка по мініатюрі"""
         if event.button() == Qt.LeftButton:
             self.clicked.emit(self.image_path)
-
-
-class ThumbnailContainer(QWidget):
-    """
-    Контейнер для вертикального списку мініатюр
-    """
-    
-    def __init__(self, thumbnail_width: int = 240):
-        super().__init__()
-        
-        self.thumbnail_width = thumbnail_width
-        self.thumbnail_height = int(thumbnail_width * 0.75)  # Пропорції 4:3
-        self.thumbnails: List[ThumbnailLabel] = []
-        self.image_paths: List[str] = []
-        
-        # Основний layout
-        self.layout = QVBoxLayout()
-        self.layout.setContentsMargins(10, 5, 10, 5)
-        self.layout.setSpacing(8)
-        self.setLayout(self.layout)
-        
-        # Встановлення розміру контейнера
-        self.setFixedWidth(thumbnail_width + 20)  # +20 для відступів
-    
-    def add_thumbnail(self, image_path: str) -> bool:
-        """
-        Додавання мініатюри до контейнера
-        
-        Args:
-            image_path: Шлях до зображення
-            
-        Returns:
-            True якщо додавання успішне
-        """
-        try:
-            # Перевірка чи зображення вже є
-            if image_path in self.image_paths:
-                return False
-            
-            # Створення мініатюри
-            thumbnail = ThumbnailLabel(
-                image_path, 
-                self.thumbnail_width - 20,  # Відступ для рамок
-                self.thumbnail_height - 20
-            )
-            
-            # Додавання до списків
-            self.thumbnails.append(thumbnail)
-            self.image_paths.append(image_path)
-            self.layout.addWidget(thumbnail)
-            
-            # Оновлення висоти контейнера
-            self.update_container_height()
-            
-            print(f"✓ Мініатюра додана: {os.path.basename(image_path)}")
-            return True
-            
-        except Exception as e:
-            print(f"✗ Помилка додавання мініатюри: {e}")
-            return False
-    
-    def clear_thumbnails(self):
-        """Очищення всіх мініатюр"""
-        try:
-            # Видалення всіх віджетів з layout
-            while self.layout.count():
-                child = self.layout.takeAt(0)
-                if child.widget():
-                    child.widget().deleteLater()
-            
-            # Очищення списків
-            self.thumbnails.clear()
-            self.image_paths.clear()
-            
-            # Оновлення висоти
-            self.update_container_height()
-            
-            print("✓ Всі мініатюри очищено")
-            
-        except Exception as e:
-            print(f"✗ Помилка очищення мініатюр: {e}")
-    
-    def update_container_height(self):
-        """Оновлення висоти контейнера"""
-        thumbnail_count = len(self.thumbnails)
-        if thumbnail_count == 0:
-            new_height = 100  # Мінімальна висота
-        else:
-            new_height = thumbnail_count * (self.thumbnail_height + 8) + 20  # +8 spacing, +20 margins
-        
-        self.setMinimumHeight(new_height)
-        self.resize(self.thumbnail_width + 20, new_height)
-    
-    def mark_as_processed(self, image_path: str):
-        """Позначити зображення як оброблене"""
-        try:
-            if image_path in self.image_paths:
-                index = self.image_paths.index(image_path)
-                if index < len(self.thumbnails):
-                    self.thumbnails[index].set_processed(True)
-                    print(f"✓ Позначено як оброблене: {os.path.basename(image_path)}")
-        except Exception as e:
-            print(f"✗ Помилка позначення як оброблене: {e}")
-    
-    def mark_as_unprocessed(self, image_path: str):
-        """Позначити зображення як необроблене"""
-        try:
-            if image_path in self.image_paths:
-                index = self.image_paths.index(image_path)
-                if index < len(self.thumbnails):
-                    self.thumbnails[index].set_processed(False)
-                    print(f"✓ Позначено як необроблене: {os.path.basename(image_path)}")
-        except Exception as e:
-            print(f"✗ Помилка позначення як необроблене: {e}")
-    
-    def set_selected_image(self, image_path: str):
-        """Встановити обране зображення"""
-        try:
-            # Скидаємо виділення з всіх мініатюр
-            for thumbnail in self.thumbnails:
-                thumbnail.set_selected(False)
-            
-            # Встановлюємо виділення для обраного
-            if image_path in self.image_paths:
-                index = self.image_paths.index(image_path)
-                if index < len(self.thumbnails):
-                    self.thumbnails[index].set_selected(True)
-                    print(f"✓ Обрано зображення: {os.path.basename(image_path)}")
-        except Exception as e:
-            print(f"✗ Помилка виділення зображення: {e}")
-    
-    def clear_all_processed_status(self):
-        """Очистити стан обробки для всіх зображень"""
-        try:
-            for thumbnail in self.thumbnails:
-                thumbnail.set_processed(False)
-            print("✓ Стан обробки очищено для всіх зображень")
-        except Exception as e:
-            print(f"✗ Помилка очищення стану обробки: {e}")
+        super().mousePressEvent(event)
 
 
 class BrowserPanel(QWidget):
     """
-    Панель браузера зображень з вертикальними мініатюрами
+    Панель браузера зображень
     
     Функціональність:
-    - Відображення мініатюр зображень у вертикальному списку
-    - Візуальні індикатори стану (оброблено/необроблено/обрано)
-    - Прокручування для великої кількості зображень
-    - Клік для вибору зображення
+    - Відображення мініатюр зображень з папки
+    - Візуальні індикатори статусу обробки
+    - Вибір зображення для роботи
+    - Швидка навігація між зображеннями
     """
     
-    # Сигнали
-    image_selected = pyqtSignal(str)  # Обране зображення
+    # Сигнали для зв'язку з головним вікном
+    image_selected = pyqtSignal(str)  # Вибране зображення
     
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -282,6 +211,7 @@ class BrowserPanel(QWidget):
         self.current_images: List[str] = []
         self.processed_images: Set[str] = set()
         self.selected_image: Optional[str] = None
+        self.thumbnail_widgets: Dict[str, ImageThumbnailWidget] = {}
         
         # Налаштування панелі
         self.setFixedWidth(UI.BROWSER_PANEL_WIDTH)
@@ -307,6 +237,9 @@ class BrowserPanel(QWidget):
         
         # Область прокручування для мініатюр
         self.create_scroll_area(layout)
+        
+        # Панель інформації
+        self.create_info_panel(layout)
     
     def create_header(self, layout: QVBoxLayout):
         """Створення заголовку браузера"""
@@ -330,7 +263,7 @@ class BrowserPanel(QWidget):
         self.scroll_area = QScrollArea()
         self.scroll_area.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
         self.scroll_area.setVerticalScrollBarPolicy(Qt.ScrollBarAsNeeded)
-        self.scroll_area.setWidgetResizable(False)
+        self.scroll_area.setWidgetResizable(True)
         self.scroll_area.setStyleSheet("""
             QScrollArea {
                 border: none;
@@ -359,32 +292,53 @@ class BrowserPanel(QWidget):
         """)
         
         # Контейнер для мініатюр
-        self.thumbnail_container = ThumbnailContainer(UI.BROWSER_PANEL_WIDTH - 20)
-        self.scroll_area.setWidget(self.thumbnail_container)
+        self.thumbnails_container = QWidget()
+        self.thumbnails_layout = QVBoxLayout()
+        self.thumbnails_layout.setContentsMargins(5, 5, 5, 5)
+        self.thumbnails_layout.setSpacing(8)
+        self.thumbnails_layout.setAlignment(Qt.AlignTop)
+        self.thumbnails_container.setLayout(self.thumbnails_layout)
         
+        self.scroll_area.setWidget(self.thumbnails_container)
         layout.addWidget(self.scroll_area)
-        
-        # Початкове повідомлення
-        self.show_no_images_message()
     
-    def show_no_images_message(self):
-        """Показ повідомлення коли немає зображень"""
-        no_images_label = QLabel("Немає зображень")
-        no_images_label.setAlignment(Qt.AlignCenter)
-        no_images_label.setStyleSheet("""
-            QLabel {
-                color: gray;
-                font-size: 14px;
-                padding: 20px;
-                background: none;
-                border: none;
+    def create_info_panel(self, layout: QVBoxLayout):
+        """Створення панелі інформації"""
+        info_frame = QFrame()
+        info_frame.setStyleSheet("""
+            QFrame {
+                background-color: white;
+                border: 1px solid #ddd;
+                border-radius: 6px;
+                padding: 8px;
             }
         """)
-        no_images_label.setWordWrap(True)
+        info_frame.setMaximumHeight(80)
         
-        # Очищуємо контейнер та додаємо повідомлення
-        self.thumbnail_container.clear_thumbnails()
-        self.thumbnail_container.layout.addWidget(no_images_label)
+        info_layout = QVBoxLayout()
+        info_layout.setContentsMargins(8, 8, 8, 8)
+        info_layout.setSpacing(4)
+        info_frame.setLayout(info_layout)
+        
+        # Загальна кількість
+        self.total_label = QLabel("Всього: 0")
+        self.total_label.setFont(QFont("Arial", 9))
+        self.total_label.setStyleSheet("color: #666; background: none; border: none;")
+        info_layout.addWidget(self.total_label)
+        
+        # Оброблені
+        self.processed_label = QLabel("Оброблено: 0")
+        self.processed_label.setFont(QFont("Arial", 9))
+        self.processed_label.setStyleSheet("color: #28a745; background: none; border: none;")
+        info_layout.addWidget(self.processed_label)
+        
+        # Залишилось
+        self.remaining_label = QLabel("Залишилось: 0")
+        self.remaining_label.setFont(QFont("Arial", 9))
+        self.remaining_label.setStyleSheet("color: #dc3545; background: none; border: none;")
+        info_layout.addWidget(self.remaining_label)
+        
+        layout.addWidget(info_frame)
     
     def load_images(self, image_paths: List[str]):
         """
@@ -393,93 +347,176 @@ class BrowserPanel(QWidget):
         Args:
             image_paths: Список шляхів до зображень
         """
-        try:
-            print(f"🔄 Завантаження {len(image_paths)} зображень до браузера...")
-            
-            # Очищення попередніх мініатюр
-            self.thumbnail_container.clear_thumbnails()
-            
-            # Фільтрація та валідація зображень
-            valid_images = []
-            for path in image_paths:
-                if is_image_file(path) and os.path.exists(path):
-                    valid_images.append(path)
-                else:
-                    print(f"⚠️ Пропуск невалідного файлу: {path}")
-            
-            if not valid_images:
-                self.show_no_images_message()
-                return
-            
-            # Створення мініатюр
-            success_count = 0
-            for image_path in valid_images:
-                if self.thumbnail_container.add_thumbnail(image_path):
-                    success_count += 1
-                    
-                    # Підключення сигналу кліка
-                    thumbnail = self.thumbnail_container.thumbnails[-1]
-                    thumbnail.clicked.connect(self.on_thumbnail_clicked)
-            
-            # Оновлення стану
-            self.current_images = valid_images
-            
-            print(f"✅ Успішно завантажено {success_count}/{len(valid_images)} мініатюр")
-            
-        except Exception as e:
-            print(f"✗ Помилка завантаження зображень: {e}")
-            self.show_no_images_message()
+        # Очищення попередніх мініатюр
+        self.clear_thumbnails()
+        
+        # Збереження списку
+        self.current_images = image_paths.copy()
+        
+        # Створення мініатюр
+        for image_path in image_paths:
+            self.add_thumbnail(image_path)
+        
+        # Оновлення інформації
+        self.update_info_panel()
+        
+        print(f"✅ Завантажено {len(image_paths)} зображень в браузер")
+    
+    def add_thumbnail(self, image_path: str):
+        """Додавання мініатюри зображення"""
+        # Створення віджета мініатюри
+        thumbnail = ImageThumbnailWidget(image_path, self)
+        thumbnail.clicked.connect(self.on_thumbnail_clicked)
+        
+        # Додавання до layout
+        self.thumbnails_layout.addWidget(thumbnail)
+        
+        # Збереження посилання
+        self.thumbnail_widgets[image_path] = thumbnail
+    
+    def clear_thumbnails(self):
+        """Очищення всіх мініатюр"""
+        # Видалення віджетів з layout
+        for i in reversed(range(self.thumbnails_layout.count())):
+            child = self.thumbnails_layout.itemAt(i).widget()
+            if child:
+                child.setParent(None)
+        
+        # Очищення словника
+        self.thumbnail_widgets.clear()
+        self.current_images.clear()
+        self.selected_image = None
+        
+        # Оновлення інформації
+        self.update_info_panel()
     
     def on_thumbnail_clicked(self, image_path: str):
         """Обробка кліка по мініатюрі"""
-        try:
-            self.selected_image = image_path
-            self.thumbnail_container.set_selected_image(image_path)
-            self.image_selected.emit(image_path)
-            
-            print(f"🖱️ Обрано зображення: {os.path.basename(image_path)}")
-            
-        except Exception as e:
-            print(f"✗ Помилка обробки кліка: {e}")
-    
-    def mark_image_as_processed(self, image_path: str):
-        """Позначити зображення як оброблене"""
-        self.processed_images.add(image_path)
-        self.thumbnail_container.mark_as_processed(image_path)
-    
-    def mark_image_as_unprocessed(self, image_path: str):
-        """Позначити зображення як необроблене"""
-        self.processed_images.discard(image_path)
-        self.thumbnail_container.mark_as_unprocessed(image_path)
-    
-    def set_selected_image(self, image_path: str):
-        """Встановити обране зображення ззовні"""
+        # Зняття виділення з попередньої мініатюри
+        if self.selected_image and self.selected_image in self.thumbnail_widgets:
+            self.thumbnail_widgets[self.selected_image].set_selected(False)
+        
+        # Встановлення нового виділення
         self.selected_image = image_path
-        self.thumbnail_container.set_selected_image(image_path)
+        if image_path in self.thumbnail_widgets:
+            self.thumbnail_widgets[image_path].set_selected(True)
+        
+        # Сигнал про вибір зображення
+        self.image_selected.emit(image_path)
+        
+        print(f"🖼️ Вибрано зображення: {os.path.basename(image_path)}")
     
-    def clear_all_processed_status(self):
-        """Очистити стан обробки для всіх зображень"""
-        self.processed_images.clear()
-        self.thumbnail_container.clear_all_processed_status()
+    def mark_as_processed(self, image_path: str):
+        """Позначення зображення як обробленого"""
+        if image_path not in self.processed_images:
+            self.processed_images.add(image_path)
+            
+            # Оновлення стилю мініатюри
+            if image_path in self.thumbnail_widgets:
+                thumbnail = self.thumbnail_widgets[image_path]
+                if not thumbnail.is_selected:  # Не змінюємо колір якщо вибрано
+                    thumbnail.set_status('processed')
+            
+            # Оновлення інформації
+            self.update_info_panel()
+            
+            print(f"✅ Зображення позначено як оброблене: {os.path.basename(image_path)}")
     
-    def clear(self):
-        """Повне очищення браузера"""
+    def mark_as_unprocessed(self, image_path: str):
+        """Зняття позначки обробки з зображення"""
+        if image_path in self.processed_images:
+            self.processed_images.remove(image_path)
+            
+            # Оновлення стилю мініатюри
+            if image_path in self.thumbnail_widgets:
+                thumbnail = self.thumbnail_widgets[image_path]
+                if not thumbnail.is_selected:  # Не змінюємо колір якщо вибрано
+                    thumbnail.set_status('normal')
+            
+            # Оновлення інформації
+            self.update_info_panel()
+            
+            print(f"↩️ З зображення знято позначку обробки: {os.path.basename(image_path)}")
+    
+    def get_next_image(self) -> Optional[str]:
+        """Отримання наступного зображення в списку"""
+        if not self.current_images or not self.selected_image:
+            return None
+        
         try:
-            self.current_images.clear()
-            self.processed_images.clear()
-            self.selected_image = None
-            self.thumbnail_container.clear_thumbnails()
-            self.show_no_images_message()
-            
-            print("✓ Браузер зображень очищено")
-            
-        except Exception as e:
-            print(f"✗ Помилка очищення браузера: {e}")
+            current_index = self.current_images.index(self.selected_image)
+            if current_index < len(self.current_images) - 1:
+                return self.current_images[current_index + 1]
+        except ValueError:
+            pass
+        
+        return None
     
-    def get_processed_count(self) -> int:
-        """Отримання кількості оброблених зображень"""
-        return len(self.processed_images)
+    def get_previous_image(self) -> Optional[str]:
+        """Отримання попереднього зображення в списку"""
+        if not self.current_images or not self.selected_image:
+            return None
+        
+        try:
+            current_index = self.current_images.index(self.selected_image)
+            if current_index > 0:
+                return self.current_images[current_index - 1]
+        except ValueError:
+            pass
+        
+        return None
     
-    def get_total_count(self) -> int:
-        """Отримання загальної кількості зображень"""
-        return len(self.current_images)
+    def select_next_image(self):
+        """Вибір наступного зображення"""
+        next_image = self.get_next_image()
+        if next_image:
+            self.on_thumbnail_clicked(next_image)
+    
+    def select_previous_image(self):
+        """Вибір попереднього зображення"""
+        previous_image = self.get_previous_image()
+        if previous_image:
+            self.on_thumbnail_clicked(previous_image)
+    
+    def update_info_panel(self):
+        """Оновлення панелі інформації"""
+        total_count = len(self.current_images)
+        processed_count = len(self.processed_images)
+        remaining_count = total_count - processed_count
+        
+        self.total_label.setText(f"Всього: {total_count}")
+        self.processed_label.setText(f"Оброблено: {processed_count}")
+        self.remaining_label.setText(f"Залишилось: {remaining_count}")
+    
+    def scroll_to_selected(self):
+        """Прокручування до вибраного зображення"""
+        if self.selected_image and self.selected_image in self.thumbnail_widgets:
+            widget = self.thumbnail_widgets[self.selected_image]
+            self.scroll_area.ensureWidgetVisible(widget)
+    
+    def get_processed_images(self) -> List[str]:
+        """Отримання списку оброблених зображень"""
+        return list(self.processed_images)
+    
+    def get_unprocessed_images(self) -> List[str]:
+        """Отримання списку необроблених зображень"""
+        return [img for img in self.current_images if img not in self.processed_images]
+    
+    def clear_processed_status(self):
+        """Очищення статусу обробки всіх зображень"""
+        self.processed_images.clear()
+        
+        # Оновлення всіх мініатюр
+        for thumbnail in self.thumbnail_widgets.values():
+            if not thumbnail.is_selected:
+                thumbnail.set_status('normal')
+        
+        self.update_info_panel()
+        print("🔄 Статус обробки всіх зображень очищено")
+
+
+# ===== ТЕСТУВАННЯ МОДУЛЯ =====
+
+if __name__ == "__main__":
+    print("=== Тестування BrowserPanel ===")
+    print("Модуль BrowserPanel готовий до використання")
