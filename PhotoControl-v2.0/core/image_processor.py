@@ -1,23 +1,15 @@
-# Додаткові константи для UI в файлі constants.py
+#!/usr/bin/env python3
+"""
+Обробка зображень з азимутальною сіткою
+Основний модуль для розрахунків азимуту, дальності та візуалізації
+"""
 
-# Додати в кінець файлу constants.py:
-
-# Константи для браузера зображень (додати в UIConstants)
-THUMBNAIL_SIZE: int = 80  # Розмір мініатюри в пікселях
-THUMBNAIL_WIDTH: int = 90  # Ширина контейнера мініатюри  
-THUMBNAIL_HEIGHT: int = 120  # Висота контейнера мініатюри
-
-# Константи для опису РЛС (додати в RadarDescription)
-DESCRIPTION_WIDTH_RATIO: float = 0.286  # 28.60% ширини зображення
-DESCRIPTION_HEIGHT_RATIO: float = 0.195  # 19.54% висоти зображення
-
-import math
 import os
-from typing import Tuple, Optional, Dict, Any, List
+import math
+from typing import Tuple, Optional, Dict, Any
 from dataclasses import dataclass
-from PIL import Image, ImageDraw, ImageFont, ImageOps
-
-from core.constants import IMAGE, GRID, VALIDATION, RADAR
+from PIL import Image, ImageDraw, ImageOps
+from PyQt5.QtCore import QObject, pyqtSignal
 
 
 @dataclass
@@ -26,51 +18,45 @@ class AnalysisPoint:
     x: int
     y: int
     azimuth: float
-    range_km: float
+    range_value: float
+    timestamp: str = ""
 
 
-@dataclass
+@dataclass 
 class GridSettings:
     """Налаштування азимутальної сітки"""
     center_x: int
     center_y: int
-    scale_value: int
-    custom_scale_distance: Optional[float] = None
-    scale_edge_x: Optional[int] = None
-    scale_edge_y: Optional[int] = None
+    scale: int
+    rotation_angle: float = 0.0
+    offset_x: int = 0
+    offset_y: int = 0
+    custom_scale_distance: Optional[int] = None
+    scale_edge_point: Optional[Tuple[int, int]] = None
 
 
-@dataclass
-class RadarDescription:
-    """Опис РЛС для додавання на зображення"""
-    date: str
-    callsign: str
-    name: str
-    number: str
-    enabled: bool = False
-
-
-class ImageProcessor:
+class ImageProcessor(QObject):
     """
-    Головний клас для обробки зображень з азимутальними сітками
+    Процесор зображень з азимутальною сіткою
     
     Функціональність:
-    - Завантаження та попередня обробка зображень
-    - Управління центром азимутальної сітки
-    - Розрахунок азимуту та дальності
-    - Калібрування масштабу
-    - Збереження налаштувань між зображеннями
-    - Створення опису РЛС
+    - Завантаження та обробка зображень
+    - Розрахунки азимуту та дальності
+    - Налаштування центру та масштабу сітки
+    - Поворот та зміщення зображень
+    - Візуалізація точок аналізу
+    - Збереження налаштувань сітки
     """
     
-    def __init__(self, image_path: str, scale_value: int = None):
-        """
-        Ініціалізація процесора зображень
+    # Сигнали для повідомлення про зміни
+    image_processed = pyqtSignal(object)  # PIL Image
+    settings_changed = pyqtSignal(object)  # GridSettings
+    analysis_completed = pyqtSignal(object)  # AnalysisPoint
+    
+    def __init__(self, image_path: str = None, **kwargs):
+        super().__init__()
         
-        Args:
-            image_path: Шлях до зображення
-            scale_value: Значення масштабу (за замовчуванням з констант)
-        """
+        # Основні властивості
         self.image_path = image_path
         self.original_image: Optional[Image.Image] = None
         self.working_image: Optional[Image.Image] = None
@@ -79,587 +65,782 @@ class ImageProcessor:
         self.grid_settings = GridSettings(
             center_x=0,
             center_y=0,
-            scale_value=scale_value or GRID.DEFAULT_SCALE
+            scale=kwargs.get('scale', 300),
+            rotation_angle=0.0,
+            offset_x=0,
+            offset_y=0
         )
         
-        # Поточна точка аналізу
-        self.current_analysis_point: Optional[AnalysisPoint] = None
+        # Стан обробки
+        self.current_analysis: Optional[AnalysisPoint] = None
+        self.is_modified = False
         
-        # Опис РЛС
-        self.radar_description: Optional[RadarDescription] = None
-        
-        # Прапорці стану
-        self.is_loaded = False
-        self.has_custom_scale = False
-        
-        # Завантаження зображення
-        self._load_image()
-        self._initialize_grid_center()
+        if image_path:
+            self.load_image(image_path)
     
-    def _load_image(self) -> bool:
-        """Завантаження та попередня обробка зображення"""
+    # ===============================
+    # ЗАВАНТАЖЕННЯ ТА ІНІЦІАЛІЗАЦІЯ
+    # ===============================
+    
+    def load_image(self, image_path: str) -> bool:
+        """
+        Завантаження зображення з файлу
+        
+        Args:
+            image_path: Шлях до файлу зображення
+            
+        Returns:
+            True якщо завантаження успішне
+        """
         try:
-            if not os.path.exists(self.image_path):
-                print(f"❌ Файл не існує: {self.image_path}")
-                return False
-            
-            # Завантаження зображення
-            self.original_image = Image.open(self.image_path)
-            
-            # Конвертація в RGB якщо потрібно
-            if self.original_image.mode == 'RGBA':
-                # Створюємо білий фон для RGBA
-                rgb_image = Image.new('RGB', self.original_image.size, (255, 255, 255))
-                rgb_image.paste(self.original_image, mask=self.original_image.split()[-1])
-                self.original_image = rgb_image
-            elif self.original_image.mode != 'RGB':
-                self.original_image = self.original_image.convert('RGB')
-            
-            # Створення робочої копії
+            self.image_path = image_path
+            self.original_image = Image.open(image_path)
             self.working_image = self.original_image.copy()
             
-            self.is_loaded = True
-            print(f"✅ Зображення завантажено: {os.path.basename(self.image_path)}")
-            print(f"   Розмір: {self.original_image.width}x{self.original_image.height}")
+            # Автоматичне виправлення орієнтації EXIF
+            self._auto_fix_orientation()
             
-            # Валідація пропорцій
-            self._validate_aspect_ratio()
+            # Ініціалізація центру сітки
+            self._initialize_grid_center()
             
+            # Конвертація в RGB якщо потрібно
+            self._ensure_rgb_format()
+            
+            self.is_modified = False
+            print(f"Зображення завантажено: {os.path.basename(image_path)}")
+            print(f"Розмір: {self.working_image.width}x{self.working_image.height}")
+            
+            self.image_processed.emit(self.working_image)
             return True
             
         except Exception as e:
-            print(f"❌ Помилка завантаження зображення: {e}")
-            self.is_loaded = False
+            print(f"Помилка завантаження зображення: {e}")
             return False
     
-    def _validate_aspect_ratio(self) -> None:
-        """Перевірка пропорцій зображення (15:13)"""
-        if not self.original_image:
-            return
-        
-        width, height = self.original_image.size
-        actual_ratio = width / height
-        expected_ratio = IMAGE.REQUIRED_ASPECT_RATIO
-        tolerance = 0.1
-        
-        if abs(actual_ratio - expected_ratio) > tolerance:
-            print(f"⚠️  Увага: Пропорції зображення {actual_ratio:.2f} відрізняються від рекомендованих {expected_ratio:.2f}")
+    def _auto_fix_orientation(self):
+        """Автоматичне виправлення орієнтації за EXIF даними"""
+        try:
+            if hasattr(self.working_image, '_getexif'):
+                exif = self.working_image._getexif()
+                if exif is not None:
+                    orientation = exif.get(274)  # EXIF Orientation tag
+                    if orientation:
+                        self.working_image = ImageOps.exif_transpose(self.working_image)
+                        self.original_image = self.working_image.copy()
+                        print("EXIF орієнтація виправлена")
+        except Exception as e:
+            print(f"Помилка виправлення EXIF: {e}")
     
-    def _initialize_grid_center(self) -> None:
+    def _initialize_grid_center(self):
         """Ініціалізація центру сітки в центрі зображення"""
-        if not self.original_image:
-            return
-        
-        self.grid_settings.center_x = self.original_image.width // 2
-        self.grid_settings.center_y = self.original_image.height // 2
-        
-        print(f"📍 Центр сітки встановлено: ({self.grid_settings.center_x}, {self.grid_settings.center_y})")
+        if self.working_image:
+            self.grid_settings.center_x = self.working_image.width // 2
+            self.grid_settings.center_y = self.working_image.height // 2
     
-    # ===== УПРАВЛІННЯ ЦЕНТРОМ СІТКИ =====
+    def _ensure_rgb_format(self):
+        """Конвертація зображення в RGB формат"""
+        if self.working_image.mode != 'RGB':
+            if self.working_image.mode == 'RGBA':
+                # Створюємо білий фон для RGBA
+                rgb_image = Image.new('RGB', self.working_image.size, (255, 255, 255))
+                rgb_image.paste(self.working_image, mask=self.working_image.split()[-1])
+                self.working_image = rgb_image
+            else:
+                self.working_image = self.working_image.convert('RGB')
+            
+            self.original_image = self.working_image.copy()
     
-    def move_center(self, dx: int, dy: int) -> bool:
+    # ===============================
+    # НАЛАШТУВАННЯ СІТКИ
+    # ===============================
+    
+    def set_grid_center(self, x: int, y: int):
         """
-        Переміщення центру сітки
+        Встановлення центру азимутальної сітки
         
         Args:
-            dx: Зміщення по X
-            dy: Зміщення по Y
-            
-        Returns:
-            True якщо переміщення успішне
+            x, y: Координати центру в пікселях
         """
-        if not self.original_image:
+        if not self._validate_coordinates(x, y):
             return False
         
+        self.grid_settings.center_x = x
+        self.grid_settings.center_y = y
+        self.is_modified = True
+        
+        print(f"Центр сітки встановлено: ({x}, {y})")
+        self.settings_changed.emit(self.grid_settings)
+        return True
+    
+    def move_center(self, dx: int, dy: int):
+        """
+        Зміщення центру сітки на вказану відстань
+        
+        Args:
+            dx: Зміщення по X (позитивне = праворуч)
+            dy: Зміщення по Y (позитивне = вниз)
+        """
         new_x = self.grid_settings.center_x + dx
         new_y = self.grid_settings.center_y + dy
         
-        # Перевірка меж
-        if (0 <= new_x < self.original_image.width and 
-            0 <= new_y < self.original_image.height):
-            
-            self.grid_settings.center_x = new_x
-            self.grid_settings.center_y = new_y
-            
-            # Перерахунок точки аналізу якщо існує
-            self._recalculate_analysis_point()
-            
-            print(f"📍 Центр переміщено на: ({new_x}, {new_y})")
-            return True
-        
-        return False
+        return self.set_grid_center(new_x, new_y)
     
-    def set_center(self, x: int, y: int) -> bool:
+    def set_scale(self, scale: int):
         """
-        Встановлення центру сітки в конкретну точку
+        Встановлення масштабу сітки
         
         Args:
-            x: Координата X
-            y: Координата Y
-            
-        Returns:
-            True якщо встановлення успішне
+            scale: Масштаб в одиницях до краю зображення
         """
-        if not self.original_image:
+        if scale <= 0:
             return False
         
-        if (0 <= x < self.original_image.width and 
-            0 <= y < self.original_image.height):
-            
-            self.grid_settings.center_x = x
-            self.grid_settings.center_y = y
-            
-            # Перерахунок точки аналізу якщо існує
-            self._recalculate_analysis_point()
-            
-            print(f"📍 Центр встановлено: ({x}, {y})")
-            return True
+        self.grid_settings.scale = scale
+        self.is_modified = True
         
-        return False
+        print(f"Масштаб встановлено: 1:{scale}")
+        self.settings_changed.emit(self.grid_settings)
+        return True
     
-    # ===== УПРАВЛІННЯ МАСШТАБОМ =====
-    
-    def set_scale_edge(self, x: int, y: int) -> bool:
+    def set_scale_edge_point(self, x: int, y: int):
         """
-        Встановлення краю масштабу для калібрування
+        Встановлення точки краю для кастомного масштабу
         
         Args:
-            x: Координата X краю
-            y: Координата Y краю
-            
-        Returns:
-            True якщо встановлення успішне
+            x, y: Координати точки краю
         """
-        if not self.original_image:
+        if not self._validate_coordinates(x, y):
             return False
         
-        # Розрахунок відстані від центру до краю в пікселях
-        dx = x - self.grid_settings.center_x
-        dy = y - self.grid_settings.center_y
-        distance_pixels = math.sqrt(dx * dx + dy * dy)
-        
-        if distance_pixels > 0:
-            self.grid_settings.scale_edge_x = x
-            self.grid_settings.scale_edge_y = y
-            self.grid_settings.custom_scale_distance = distance_pixels
-            self.has_custom_scale = True
-            
-            # Перерахунок точки аналізу якщо існує
-            self._recalculate_analysis_point()
-            
-            print(f"📏 Край масштабу встановлено: ({x}, {y}), відстань: {distance_pixels:.1f} пікс")
-            return True
-        
-        return False
-    
-    def set_scale_value(self, scale_value: int) -> bool:
-        """
-        Встановлення значення масштабу
-        
-        Args:
-            scale_value: Значення масштабу в км
-            
-        Returns:
-            True якщо встановлення успішне
-        """
-        if scale_value in GRID.AVAILABLE_SCALES:
-            self.grid_settings.scale_value = scale_value
-            
-            # Перерахунок точки аналізу якщо існує
-            self._recalculate_analysis_point()
-            
-            print(f"📏 Масштаб встановлено: {scale_value} км")
-            return True
-        
-        return False
-    
-    # ===== АНАЛІЗ ТОЧОК =====
-    
-    def set_analysis_point(self, x: int, y: int) -> Optional[AnalysisPoint]:
-        """
-        Встановлення точки аналізу з розрахунком азимуту та дальності
-        
-        Args:
-            x: Координата X точки
-            y: Координата Y точки
-            
-        Returns:
-            AnalysisPoint з розрахованими значеннями або None
-        """
-        if not self.original_image:
-            return None
-        
-        # Розрахунок азимуту та дальності
-        azimuth, range_km = self._calculate_azimuth_range(x, y)
-        
-        # Створення точки аналізу
-        self.current_analysis_point = AnalysisPoint(
-            x=x,
-            y=y,
-            azimuth=azimuth,
-            range_km=range_km
+        # Розрахунок відстані від центру до точки
+        distance = self._calculate_pixel_distance(
+            self.grid_settings.center_x, self.grid_settings.center_y, x, y
         )
         
-        print(f"🎯 Точка аналізу: ({x}, {y}) → Азимут: {azimuth:.0f}°, Дальність: {range_km:.0f} км")
-        return self.current_analysis_point
+        if distance > 0:
+            self.grid_settings.scale_edge_point = (x, y)
+            self.grid_settings.custom_scale_distance = int(distance)
+            self.is_modified = True
+            
+            print(f"Точка масштабу: ({x}, {y}), відстань: {distance:.1f} пікселів")
+            self.settings_changed.emit(self.grid_settings)
+            return True
+        
+        return False
     
-    def _calculate_azimuth_range(self, x: int, y: int) -> Tuple[float, float]:
+    # ===============================
+    # ПЕРЕТВОРЕННЯ ЗОБРАЖЕННЯ
+    # ===============================
+    
+    def rotate_image(self, angle: float):
+        """
+        Поворот зображення на вказаний кут
+        
+        Args:
+            angle: Кут повороту в градусах (позитивний = за годинниковою)
+        """
+        self.grid_settings.rotation_angle += angle
+        self.grid_settings.rotation_angle %= 360
+        
+        # Поворот зображення (PIL повертає проти годинникової, тому негативний кут)
+        self.working_image = self.original_image.rotate(
+            -self.grid_settings.rotation_angle, 
+            expand=True, 
+            fillcolor='white'
+        )
+        
+        # Перерахунок координат центру після повороту
+        self._recalculate_center_after_rotation()
+        
+        self.is_modified = True
+        print(f"Зображення повернуто на {angle}°. Загальний поворот: {self.grid_settings.rotation_angle}°")
+        
+        self.image_processed.emit(self.working_image)
+        self.settings_changed.emit(self.grid_settings)
+    
+    def _recalculate_center_after_rotation(self):
+        """Перерахунок координат центру після повороту зображення"""
+        if not self.original_image:
+            return
+        
+        # Отримуємо нові розміри після повороту
+        original_center_x = self.original_image.width // 2
+        original_center_y = self.original_image.height // 2
+        
+        # Розрахунок нового центру з урахуванням повороту та зміщень
+        self.grid_settings.center_x = (self.working_image.width // 2 + 
+                                     self.grid_settings.offset_x)
+        self.grid_settings.center_y = (self.working_image.height // 2 + 
+                                     self.grid_settings.offset_y)
+    
+    def reset_transformations(self):
+        """Скидання всіх перетворень до оригінального стану"""
+        if not self.original_image:
+            return False
+        
+        self.working_image = self.original_image.copy()
+        self.grid_settings.rotation_angle = 0.0
+        self.grid_settings.offset_x = 0
+        self.grid_settings.offset_y = 0
+        
+        self._initialize_grid_center()
+        self.is_modified = False
+        
+        print("Всі перетворення скинуто")
+        self.image_processed.emit(self.working_image)
+        self.settings_changed.emit(self.grid_settings)
+        return True
+    
+    # ===============================
+    # РОЗРАХУНКИ АЗИМУТУ ТА ДАЛЬНОСТІ
+    # ===============================
+    
+    def calculate_azimuth_range(self, x: int, y: int) -> Tuple[float, float]:
         """
         Розрахунок азимуту та дальності для точки
         
         Args:
-            x: Координата X точки
-            y: Координата Y точки
+            x, y: Координати точки на зображенні
             
         Returns:
-            Кортеж (азимут_в_градусах, дальність_в_км)
+            Кортеж (азимут_в_градусах, дальність_в_одиницях)
         """
-        # Відносні координати від центру
+        # Відносні координати від центру сітки
         dx = x - self.grid_settings.center_x
-        dy = self.grid_settings.center_y - y  # Інвертуємо Y (математичні координати)
+        dy = y - self.grid_settings.center_y
         
-        # Розрахунок дальності в пікселях
-        range_pixels = math.sqrt(dx * dx + dy * dy)
-        
-        # Розрахунок дальності в реальних одиницях
-        if self.has_custom_scale and self.grid_settings.custom_scale_distance:
-            # Використовуємо користувацький масштаб
-            range_actual = (range_pixels / self.grid_settings.custom_scale_distance) * self.grid_settings.scale_value
-        else:
-            # Використовуємо стандартний масштаб (до нижнього краю)
-            bottom_edge_distance = self.original_image.height - self.grid_settings.center_y
-            if bottom_edge_distance > 0:
-                range_actual = (range_pixels / bottom_edge_distance) * self.grid_settings.scale_value
-            else:
-                range_actual = 0.0
-        
-        # Розрахунок азимуту
-        azimuth_radians = math.atan2(dx, dy)  # atan2(x, y) для стандартного азимуту
-        azimuth_degrees = math.degrees(azimuth_radians)
+        # Розрахунок азимуту (0° = північ, за годинниковою)
+        azimuth_rad = math.atan2(dx, -dy)  # -dy тому що Y збільшується вниз
+        azimuth_deg = math.degrees(azimuth_rad)
         
         # Нормалізація азимуту до діапазону 0-360°
-        if azimuth_degrees < 0:
-            azimuth_degrees += 360
+        if azimuth_deg < 0:
+            azimuth_deg += 360
         
-        return azimuth_degrees, range_actual
+        # Розрахунок дальності
+        range_value = self._calculate_range(dx, dy)
+        
+        return azimuth_deg, range_value
     
-    def _recalculate_analysis_point(self) -> None:
-        """Перерахунок поточної точки аналізу після зміни параметрів сітки"""
-        if self.current_analysis_point:
-            azimuth, range_km = self._calculate_azimuth_range(
-                self.current_analysis_point.x,
-                self.current_analysis_point.y
-            )
-            self.current_analysis_point.azimuth = azimuth
-            self.current_analysis_point.range_km = range_km
-    
-    # ===== ВІЗУАЛІЗАЦІЯ =====
-    
-    def create_preview_image(self, show_grid: bool = True, show_analysis: bool = True, 
-                           show_radar_desc: bool = False) -> Optional[Image.Image]:
+    def _calculate_range(self, dx: int, dy: int) -> float:
         """
-        Створення зображення для попереднього перегляду з накладеними елементами
+        Розрахунок дальності в одиницях масштабу
         
         Args:
-            show_grid: Показувати азимутальну сітку
-            show_analysis: Показувати точку аналізу
-            show_radar_desc: Показувати опис РЛС
+            dx, dy: Відносні координати від центру
             
         Returns:
-            Зображення для перегляду або None
+            Дальність в одиницях масштабу
+        """
+        pixel_distance = math.sqrt(dx * dx + dy * dy)
+        
+        if self.grid_settings.custom_scale_distance:
+            # Використовуємо кастомний масштаб
+            units_per_pixel = self.grid_settings.scale / self.grid_settings.custom_scale_distance
+        else:
+            # Використовуємо автоматичний масштаб до краю зображення
+            max_distance = self._get_max_distance_to_edge()
+            units_per_pixel = self.grid_settings.scale / max_distance
+        
+        return pixel_distance * units_per_pixel
+    
+    def _get_max_distance_to_edge(self) -> float:
+        """Розрахунок максимальної відстані від центру до краю зображення"""
+        if not self.working_image:
+            return 1.0
+        
+        distances = [
+            self.grid_settings.center_x,  # Ліворуч
+            self.working_image.width - self.grid_settings.center_x,  # Праворуч
+            self.grid_settings.center_y,  # Вгору
+            self.working_image.height - self.grid_settings.center_y  # Вниз
+        ]
+        
+        return max(distances)
+    
+    # ===============================
+    # ОБРОБКА КЛІКІВ ТА АНАЛІЗ
+    # ===============================
+    
+    def process_click(self, x: int, y: int) -> AnalysisPoint:
+        """
+        Обробка кліку на зображенні - створення точки аналізу
+        
+        Args:
+            x, y: Координати кліку
+            
+        Returns:
+            AnalysisPoint з розрахованими даними
+        """
+        if not self._validate_coordinates(x, y):
+            return None
+        
+        # Розрахунок азимуту та дальності
+        azimuth, range_value = self.calculate_azimuth_range(x, y)
+        
+        # Створення точки аналізу
+        self.current_analysis = AnalysisPoint(
+            x=x,
+            y=y,
+            azimuth=azimuth,
+            range_value=range_value,
+            timestamp=self._get_current_timestamp()
+        )
+        
+        print(f"Точка аналізу: ({x}, {y}) -> Азимут: {azimuth:.1f}°, Дальність: {range_value:.1f}")
+        
+        self.analysis_completed.emit(self.current_analysis)
+        return self.current_analysis
+    
+    def create_processed_image(self, line_to_edge: bool = True) -> Image.Image:
+        """
+        Створення зображення з візуалізацією точки аналізу
+        
+        Args:
+            line_to_edge: Чи малювати лінію до краю
+            
+        Returns:
+            PIL Image з нанесеними елементами
+        """
+        if not self.working_image or not self.current_analysis:
+            return self.working_image
+        
+        # Створюємо копію для обробки
+        processed_image = self.working_image.copy()
+        draw = ImageDraw.Draw(processed_image)
+        
+        # Параметри візуалізації
+        point_color = (255, 0, 0)  # Червоний
+        line_color = (0, 255, 0)   # Зелений
+        circle_radius = 8
+        line_width = 3
+        
+        # Малюємо точку аналізу
+        self._draw_analysis_point(draw, self.current_analysis, point_color, circle_radius)
+        
+        # Малюємо лінію до краю (якщо потрібно)
+        if line_to_edge:
+            edge_point = self._calculate_edge_point(self.current_analysis)
+            self._draw_line_to_edge(draw, self.current_analysis, edge_point, line_color, line_width)
+        
+        return processed_image
+    
+    def _draw_analysis_point(self, draw: ImageDraw.Draw, point: AnalysisPoint, 
+                           color: Tuple[int, int, int], radius: int):
+        """Малювання точки аналізу на зображенні"""
+        x, y = point.x, point.y
+        
+        # Коло навколо точки
+        draw.ellipse([
+            x - radius, y - radius,
+            x + radius, y + radius
+        ], fill=color)
+        
+        # Центральна точка
+        draw.ellipse([
+            x - 2, y - 2,
+            x + 2, y + 2
+        ], fill=(255, 255, 255))
+    
+    def _draw_line_to_edge(self, draw: ImageDraw.Draw, point: AnalysisPoint,
+                          edge_point: Tuple[int, int], color: Tuple[int, int, int], width: int):
+        """Малювання лінії від точки до краю зображення"""
+        draw.line([
+            (point.x, point.y),
+            edge_point
+        ], fill=color, width=width)
+    
+    def _calculate_edge_point(self, point: AnalysisPoint) -> Tuple[int, int]:
+        """Розрахунок точки на краю зображення в напрямку від центру"""
+        if not self.working_image:
+            return (point.x, point.y)
+        
+        # Вектор від центру до точки
+        dx = point.x - self.grid_settings.center_x
+        dy = point.y - self.grid_settings.center_y
+        
+        # Нормалізація вектора
+        if dx == 0 and dy == 0:
+            return (self.working_image.width - 1, point.y)
+        
+        # Знаходимо перетин з краями зображення
+        width, height = self.working_image.width, self.working_image.height
+        
+        # Параметричне рівняння лінії: (x, y) = (center_x, center_y) + t * (dx, dy)
+        t_values = []
+        
+        # Перетин з лівим краєм (x = 0)
+        if dx < 0:
+            t = -self.grid_settings.center_x / dx
+            y = self.grid_settings.center_y + t * dy
+            if 0 <= y <= height:
+                t_values.append((t, (0, int(y))))
+        
+        # Перетин з правим краєм (x = width)
+        if dx > 0:
+            t = (width - self.grid_settings.center_x) / dx
+            y = self.grid_settings.center_y + t * dy
+            if 0 <= y <= height:
+                t_values.append((t, (width - 1, int(y))))
+        
+        # Перетин з верхнім краєм (y = 0)
+        if dy < 0:
+            t = -self.grid_settings.center_y / dy
+            x = self.grid_settings.center_x + t * dx
+            if 0 <= x <= width:
+                t_values.append((t, (int(x), 0)))
+        
+        # Перетин з нижнім краєм (y = height)
+        if dy > 0:
+            t = (height - self.grid_settings.center_y) / dy
+            x = self.grid_settings.center_x + t * dx
+            if 0 <= x <= width:
+                t_values.append((t, (int(x), height - 1)))
+        
+        # Вибираємо найближчий край (найменше t > 0)
+        valid_intersections = [(t, point) for t, point in t_values if t > 0]
+        
+        if valid_intersections:
+            return min(valid_intersections, key=lambda x: x[0])[1]
+        else:
+            # Якщо не знайшли перетин, повертаємо праву сторону
+            return (width - 1, point.y)
+    
+    # ===============================
+    # ДОПОМІЖНІ МЕТОДИ
+    # ===============================
+    
+    def _validate_coordinates(self, x: int, y: int) -> bool:
+        """Перевірка чи координати знаходяться в межах зображення"""
+        if not self.working_image:
+            return False
+        
+        return (0 <= x < self.working_image.width and 
+                0 <= y < self.working_image.height)
+    
+    def _calculate_pixel_distance(self, x1: int, y1: int, x2: int, y2: int) -> float:
+        """Розрахунок відстані між двома точками в пікселях"""
+        return math.sqrt((x2 - x1) ** 2 + (y2 - y1) ** 2)
+    
+    def _get_current_timestamp(self) -> str:
+        """Отримання поточної мітки часу"""
+        from datetime import datetime
+        return datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    
+    def get_center_preview(self, size: int = 200) -> Image.Image:
+        """
+        Створення превью області навколо центру сітки
+        
+        Args:
+            size: Розмір превью в пікселях
+            
+        Returns:
+            PIL Image з областю навколо центру
         """
         if not self.working_image:
             return None
         
-        # Створюємо копію для роботи
-        preview = self.working_image.copy()
+        half_size = size // 2
+        
+        # Координати області
+        left = max(0, self.grid_settings.center_x - half_size)
+        top = max(0, self.grid_settings.center_y - half_size)
+        right = min(self.working_image.width, self.grid_settings.center_x + half_size)
+        bottom = min(self.working_image.height, self.grid_settings.center_y + half_size)
+        
+        # Вирізаємо область
+        preview = self.working_image.crop((left, top, right, bottom))
+        
+        # Малюємо хрестик в центрі
         draw = ImageDraw.Draw(preview)
+        center_x = self.grid_settings.center_x - left
+        center_y = self.grid_settings.center_y - top
         
-        # Малювання азимутальної сітки
-        if show_grid:
-            self._draw_azimuth_grid(draw, preview.size)
-        
-        # Малювання точки аналізу
-        if show_analysis and self.current_analysis_point:
-            self._draw_analysis_point(draw)
-        
-        # Додавання опису РЛС
-        if show_radar_desc and self.radar_description and self.radar_description.enabled:
-            preview = self._add_radar_description(preview)
+        # Перевіряємо чи центр в межах превью
+        if 0 <= center_x < preview.width and 0 <= center_y < preview.height:
+            cross_size = 10
+            draw.line([
+                (center_x - cross_size, center_y),
+                (center_x + cross_size, center_y)
+            ], fill=(255, 0, 0), width=2)
+            draw.line([
+                (center_x, center_y - cross_size),
+                (center_x, center_y + cross_size)
+            ], fill=(255, 0, 0), width=2)
         
         return preview
     
-    def _draw_azimuth_grid(self, draw: ImageDraw.Draw, image_size: Tuple[int, int]) -> None:
-        """Малювання азимутальної сітки"""
-        center_x = self.grid_settings.center_x
-        center_y = self.grid_settings.center_y
-        
-        # Колір та товщина ліній
-        line_color = (0, 255, 0, 128)  # Зелений з прозорістю
-        line_width = 1
-        
-        # Малювання азимутальних ліній (через кожні 30°)
-        max_radius = max(image_size[0], image_size[1])
-        
-        for angle in range(0, 360, 30):
-            angle_rad = math.radians(angle)
-            end_x = center_x + max_radius * math.sin(angle_rad)
-            end_y = center_y - max_radius * math.cos(angle_rad)
-            
-            draw.line([center_x, center_y, end_x, end_y], 
-                     fill=line_color, width=line_width)
-        
-        # Малювання концентричних кіл
-        if self.has_custom_scale and self.grid_settings.custom_scale_distance:
-            scale_distance = self.grid_settings.custom_scale_distance
-            scale_value = self.grid_settings.scale_value
-            
-            # Кола через кожні 25 км до максимальної дальності
-            for range_km in range(25, scale_value + 25, 25):
-                radius = (range_km / scale_value) * scale_distance
-                if radius < max_radius:
-                    bbox = [center_x - radius, center_y - radius,
-                           center_x + radius, center_y + radius]
-                    draw.ellipse(bbox, outline=line_color, width=line_width)
-        
-        # Малювання центру
-        center_size = 3
-        draw.ellipse([center_x - center_size, center_y - center_size,
-                     center_x + center_size, center_y + center_size],
-                    fill=(255, 0, 0), outline=(255, 255, 255), width=1)
-        
-        # Малювання краю масштабу якщо встановлено
-        if (self.has_custom_scale and 
-            self.grid_settings.scale_edge_x is not None and 
-            self.grid_settings.scale_edge_y is not None):
-            
-            edge_x = self.grid_settings.scale_edge_x
-            edge_y = self.grid_settings.scale_edge_y
-            
-            # Лінія до краю масштабу
-            draw.line([center_x, center_y, edge_x, edge_y], 
-                     fill=(255, 255, 0), width=2)
-            
-            # Точка краю масштабу
-            edge_size = 4
-            draw.ellipse([edge_x - edge_size, edge_y - edge_size,
-                         edge_x + edge_size, edge_y + edge_size],
-                        fill=(255, 255, 0), outline=(0, 0, 0), width=1)
+    # ===============================
+    # ЗБЕРЕЖЕННЯ ТА ЗАВАНТАЖЕННЯ НАЛАШТУВАНЬ
+    # ===============================
     
-    def _draw_analysis_point(self, draw: ImageDraw.Draw) -> None:
-        """Малювання точки аналізу"""
-        if not self.current_analysis_point:
-            return
-        
-        x = self.current_analysis_point.x
-        y = self.current_analysis_point.y
-        
-        # Точка аналізу
-        point_size = 5
-        draw.ellipse([x - point_size, y - point_size,
-                     x + point_size, y + point_size],
-                    fill=(0, 0, 255), outline=(255, 255, 255), width=2)
-        
-        # Лінія від центру до точки
-        draw.line([self.grid_settings.center_x, self.grid_settings.center_y, x, y], 
-                 fill=(0, 0, 255), width=2)
-    
-    def _add_radar_description(self, image: Image.Image) -> Image.Image:
-        """Додавання опису РЛС в лівий нижній кут"""
-        if not self.radar_description:
-            return image
-        
-        # Створюємо копію для роботи
-        result = image.copy()
-        draw = ImageDraw.Draw(result)
-        
-        # Розміри таблички
-        table_width = int(image.width * RADAR.DESCRIPTION_WIDTH_RATIO)
-        table_height = int(image.height * RADAR.DESCRIPTION_HEIGHT_RATIO)
-        
-        # Позиція в лівому нижньому кутку
-        margin = 10
-        table_x = margin
-        table_y = image.height - table_height - margin
-        
-        # Фон таблички
-        draw.rectangle([table_x, table_y, table_x + table_width, table_y + table_height],
-                      fill=(255, 255, 255), outline=(0, 0, 0), width=2)
-        
-        # Текст опису (спрощена версія)
-        try:
-            font_size = max(8, table_height // 8)
-            font = ImageFont.load_default()
-        except:
-            font = None
-        
-        # Додавання тексту
-        text_y = table_y + 5
-        line_height = table_height // 6
-        
-        lines = [
-            f"Дата: {self.radar_description.date}",
-            f"Позивний: {self.radar_description.callsign}",
-            f"Назва: {self.radar_description.name}",
-            f"Номер: {self.radar_description.number}"
-        ]
-        
-        for line in lines:
-            if text_y + line_height < table_y + table_height:
-                draw.text((table_x + 5, text_y), line, fill=(0, 0, 0), font=font)
-                text_y += line_height
-        
-        return result
-    
-    # ===== ОПИС РЛС =====
-    
-    def set_radar_description(self, date: str, callsign: str, name: str, number: str, enabled: bool = True) -> None:
-        """Встановлення опису РЛС"""
-        self.radar_description = RadarDescription(
-            date=date,
-            callsign=callsign,
-            name=name,
-            number=number,
-            enabled=enabled
-        )
-        
-        print(f"📡 Опис РЛС встановлено: {callsign} - {name}")
-    
-    def toggle_radar_description(self, enabled: bool) -> None:
-        """Включення/виключення опису РЛС"""
-        if self.radar_description:
-            self.radar_description.enabled = enabled
-            print(f"📡 Опис РЛС {'увімкнено' if enabled else 'вимкнено'}")
-    
-    # ===== ЗБЕРЕЖЕННЯ =====
-    
-    def save_processed_image(self, output_path: str, include_grid: bool = True, 
-                           include_analysis: bool = True, include_radar_desc: bool = None) -> bool:
+    def save_grid_settings(self) -> Dict[str, Any]:
         """
-        Збереження обробленого зображення
-        
-        Args:
-            output_path: Шлях для збереження
-            include_grid: Включати азимутальну сітку
-            include_analysis: Включати точку аналізу
-            include_radar_desc: Включати опис РЛС (за замовчуванням авто)
-            
-        Returns:
-            True якщо збереження успішне
-        """
-        try:
-            # Автоматичне визначення включення опису РЛС
-            if include_radar_desc is None:
-                include_radar_desc = (self.radar_description and 
-                                    self.radar_description.enabled)
-            
-            # Створення фінального зображення
-            final_image = self.create_preview_image(
-                show_grid=include_grid,
-                show_analysis=include_analysis,
-                show_radar_desc=include_radar_desc
-            )
-            
-            if final_image:
-                # Збереження з оптимальною якістю
-                final_image.save(output_path, format='JPEG', quality=95, optimize=True)
-                print(f"💾 Зображення збережено: {output_path}")
-                return True
-            
-        except Exception as e:
-            print(f"❌ Помилка збереження: {e}")
-        
-        return False
-    
-    # ===== ЕКСПОРТ ДАНИХ =====
-    
-    def get_export_data(self) -> Dict[str, Any]:
-        """
-        Отримання даних для експорту в альбом
+        Збереження поточних налаштувань сітки
         
         Returns:
-            Словник з даними зображення
+            Словник з налаштуваннями
         """
-        data = {
-            'image_path': self.image_path,
-            'image_filename': os.path.basename(self.image_path),
-            'image_size': (self.original_image.width, self.original_image.height) if self.original_image else (0, 0),
-            'grid_settings': {
-                'center_x': self.grid_settings.center_x,
-                'center_y': self.grid_settings.center_y,
-                'scale_value': self.grid_settings.scale_value,
-                'has_custom_scale': self.has_custom_scale,
-                'custom_scale_distance': self.grid_settings.custom_scale_distance,
-                'scale_edge_x': self.grid_settings.scale_edge_x,
-                'scale_edge_y': self.grid_settings.scale_edge_y
-            }
+        settings = {
+            'center_x': self.grid_settings.center_x,
+            'center_y': self.grid_settings.center_y,
+            'scale': self.grid_settings.scale,
+            'rotation_angle': self.grid_settings.rotation_angle,
+            'offset_x': self.grid_settings.offset_x,
+            'offset_y': self.grid_settings.offset_y,
+            'custom_scale_distance': self.grid_settings.custom_scale_distance,
+            'scale_edge_point': self.grid_settings.scale_edge_point
         }
         
-        # Додавання даних точки аналізу
-        if self.current_analysis_point:
-            data['analysis_point'] = {
-                'x': self.current_analysis_point.x,
-                'y': self.current_analysis_point.y,
-                'azimuth': self.current_analysis_point.azimuth,
-                'range_km': self.current_analysis_point.range_km
-            }
-        
-        # Додавання опису РЛС
-        if self.radar_description:
-            data['radar_description'] = {
-                'date': self.radar_description.date,
-                'callsign': self.radar_description.callsign,
-                'name': self.radar_description.name,
-                'number': self.radar_description.number,
-                'enabled': self.radar_description.enabled
-            }
-        
-        return data
+        print("Налаштування сітки збережено")
+        return settings
     
-    # ===== УТИЛІТАРНІ МЕТОДИ =====
+    def load_grid_settings(self, settings: Dict[str, Any]) -> bool:
+        """
+        Завантаження налаштувань сітки
+        
+        Args:
+            settings: Словник з налаштуваннями
+            
+        Returns:
+            True якщо завантаження успішне
+        """
+        try:
+            self.grid_settings.center_x = settings.get('center_x', self.grid_settings.center_x)
+            self.grid_settings.center_y = settings.get('center_y', self.grid_settings.center_y)
+            self.grid_settings.scale = settings.get('scale', self.grid_settings.scale)
+            self.grid_settings.rotation_angle = settings.get('rotation_angle', 0.0)
+            self.grid_settings.offset_x = settings.get('offset_x', 0)
+            self.grid_settings.offset_y = settings.get('offset_y', 0)
+            self.grid_settings.custom_scale_distance = settings.get('custom_scale_distance')
+            self.grid_settings.scale_edge_point = settings.get('scale_edge_point')
+            
+            # Застосовуємо поворот якщо потрібно
+            if self.grid_settings.rotation_angle != 0:
+                self._apply_rotation()
+            
+            self.is_modified = True
+            print("Налаштування сітки завантажено")
+            
+            self.settings_changed.emit(self.grid_settings)
+            return True
+            
+        except Exception as e:
+            print(f"Помилка завантаження налаштувань: {e}")
+            return False
+    
+    def _apply_rotation(self):
+        """Застосування збереженого кута повороту"""
+        if self.original_image and self.grid_settings.rotation_angle != 0:
+            self.working_image = self.original_image.rotate(
+                -self.grid_settings.rotation_angle,
+                expand=True,
+                fillcolor='white'
+            )
+            self._recalculate_center_after_rotation()
+            self.image_processed.emit(self.working_image)
+    
+    def apply_settings_to_new_image(self, settings: Dict[str, Any]):
+        """
+        Застосування збережених налаштувань до нового зображення
+        
+        Args:
+            settings: Збережені налаштування від попереднього зображення
+        """
+        if not self.working_image:
+            return
+        
+        # Отримуємо центр нового зображення
+        image_center_x = self.working_image.width // 2
+        image_center_y = self.working_image.height // 2
+        
+        # Застосовуємо зміщення центру відносно центру зображення
+        center_offset_x = settings.get('center_offset_x', 0)
+        center_offset_y = settings.get('center_offset_y', 0)
+        
+        self.grid_settings.center_x = image_center_x + center_offset_x
+        self.grid_settings.center_y = image_center_y + center_offset_y
+        
+        # Застосовуємо інші налаштування
+        self.grid_settings.scale = settings.get('scale', 300)
+        self.grid_settings.rotation_angle = settings.get('rotation_angle', 0.0)
+        
+        # Відновлюємо scale edge point відносно центру зображення
+        if settings.get('scale_edge_relative') and settings.get('custom_scale_distance'):
+            edge_relative = settings['scale_edge_relative']
+            new_edge_x = image_center_x + edge_relative[0]
+            new_edge_y = image_center_y + edge_relative[1]
+            
+            self.set_scale_edge_point(new_edge_x, new_edge_y)
+        
+        # Застосовуємо поворот
+        if self.grid_settings.rotation_angle != 0:
+            self._apply_rotation()
+        
+        print("Налаштування сітки застосовано до нового зображення")
+        self.settings_changed.emit(self.grid_settings)
+    
+    # ===============================
+    # СТАТИСТИКА ТА ІНФОРМАЦІЯ
+    # ===============================
     
     def get_image_info(self) -> Dict[str, Any]:
-        """Отримання інформації про зображення"""
-        if not self.original_image:
+        """
+        Отримання інформації про поточне зображення
+        
+        Returns:
+            Словник з інформацією про зображення
+        """
+        if not self.working_image:
             return {}
         
         return {
-            'path': self.image_path,
-            'filename': os.path.basename(self.image_path),
-            'size': (self.original_image.width, self.original_image.height),
-            'mode': self.original_image.mode,
-            'format': self.original_image.format,
-            'file_size': os.path.getsize(self.image_path) if os.path.exists(self.image_path) else 0
+            'filename': os.path.basename(self.image_path) if self.image_path else "Невідомо",
+            'width': self.working_image.width,
+            'height': self.working_image.height,
+            'mode': self.working_image.mode,
+            'format': self.working_image.format,
+            'has_analysis': self.current_analysis is not None,
+            'is_modified': self.is_modified,
+            'grid_center': (self.grid_settings.center_x, self.grid_settings.center_y),
+            'scale': self.grid_settings.scale,
+            'rotation': self.grid_settings.rotation_angle,
+            'max_range': self._get_max_distance_to_edge() * (self.grid_settings.scale / self._get_max_distance_to_edge()) if self.working_image else 0
         }
     
-    def reset_analysis(self) -> None:
-        """Скидання точки аналізу"""
-        self.current_analysis_point = None
-        print("🔄 Точка аналізу очищена")
+    def get_analysis_summary(self) -> str:
+        """
+        Отримання текстового резюме аналізу
+        
+        Returns:
+            Рядок з інформацією про поточний аналіз
+        """
+        if not self.current_analysis:
+            return "Аналіз не виконано"
+        
+        info = self.get_image_info()
+        
+        summary = [
+            f"📁 Файл: {info.get('filename', 'Невідомо')}",
+            f"📐 Розмір: {info.get('width', 0)}×{info.get('height', 0)}",
+            f"🎯 Центр сітки: ({self.grid_settings.center_x}, {self.grid_settings.center_y})",
+            f"📏 Масштаб: 1:{self.grid_settings.scale}",
+            f"📍 Точка аналізу: ({self.current_analysis.x}, {self.current_analysis.y})",
+            f"🧭 Азимут: {self.current_analysis.azimuth:.1f}°",
+            f"📊 Дальність: {self.current_analysis.range_value:.1f} од.",
+            f"⏰ Час: {self.current_analysis.timestamp}"
+        ]
+        
+        if self.grid_settings.rotation_angle != 0:
+            summary.insert(-1, f"🔄 Поворот: {self.grid_settings.rotation_angle:.1f}°")
+        
+        return "\n".join(summary)
     
-    def reset_grid_settings(self) -> None:
-        """Скидання налаштувань сітки до початкових"""
-        self._initialize_grid_center()
-        self.grid_settings.scale_value = GRID.DEFAULT_SCALE
-        self.grid_settings.custom_scale_distance = None
-        self.grid_settings.scale_edge_x = None
-        self.grid_settings.scale_edge_y = None
-        self.has_custom_scale = False
+    # ===============================
+    # МЕТОДИ ДЛЯ ЗОВНІШНЬОГО ВИКОРИСТАННЯ
+    # ===============================
+    
+    def is_ready(self) -> bool:
+        """Перевірка чи процесор готовий до роботи"""
+        return self.working_image is not None
+    
+    def has_analysis(self) -> bool:
+        """Перевірка чи є поточний аналіз"""
+        return self.current_analysis is not None
+    
+    def clear_analysis(self):
+        """Очищення поточного аналізу"""
+        self.current_analysis = None
+        print("Аналіз очищено")
+    
+    def get_current_image(self) -> Optional[Image.Image]:
+        """Отримання поточного робочого зображення"""
+        return self.working_image
+    
+    def get_processed_image(self) -> Optional[Image.Image]:
+        """Отримання обробленого зображення з візуалізацією"""
+        return self.create_processed_image()
+    
+    def export_analysis_data(self) -> Optional[Dict[str, Any]]:
+        """
+        Експорт даних аналізу для збереження
         
-        # Перерахунок точки аналізу
-        self._recalculate_analysis_point()
+        Returns:
+            Словник з повними даними аналізу
+        """
+        if not self.current_analysis:
+            return None
         
-        print("🔄 Налаштування сітки скинуто")
+        return {
+            'image_info': self.get_image_info(),
+            'grid_settings': self.save_grid_settings(),
+            'analysis_point': {
+                'x': self.current_analysis.x,
+                'y': self.current_analysis.y,
+                'azimuth': self.current_analysis.azimuth,
+                'range_value': self.current_analysis.range_value,
+                'timestamp': self.current_analysis.timestamp
+            },
+            'summary': self.get_analysis_summary()
+        }
 
 
-# ===== ТЕСТУВАННЯ МОДУЛЯ =====
+# ===============================
+# ДОПОМІЖНІ ФУНКЦІЇ
+# ===============================
+
+def create_test_processor(width: int = 800, height: int = 600) -> ImageProcessor:
+    """
+    Створення тестового процесора з штучним зображенням
+    
+    Args:
+        width, height: Розміри тестового зображення
+        
+    Returns:
+        Налаштований ImageProcessor
+    """
+    # Створення тестового зображення
+    test_image = Image.new('RGB', (width, height), (240, 240, 240))
+    draw = ImageDraw.Draw(test_image)
+    
+    # Малюємо сітку
+    for i in range(0, width, 50):
+        draw.line([(i, 0), (i, height)], fill=(200, 200, 200))
+    for i in range(0, height, 50):
+        draw.line([(0, i), (width, i)], fill=(200, 200, 200))
+    
+    # Малюємо центральний хрест
+    center_x, center_y = width // 2, height // 2
+    draw.line([(center_x - 20, center_y), (center_x + 20, center_y)], fill=(255, 0, 0), width=3)
+    draw.line([(center_x, center_y - 20), (center_x, center_y + 20)], fill=(255, 0, 0), width=3)
+    
+    # Створення процесора
+    processor = ImageProcessor()
+    processor.working_image = test_image
+    processor.original_image = test_image.copy()
+    processor._initialize_grid_center()
+    
+    return processor
+
 
 if __name__ == "__main__":
+    # Тестування модуля
     print("=== Тестування ImageProcessor ===")
     
-    # Тест базового функціоналу
-    # processor = ImageProcessor("test_image.jpg")
-    # print(f"Завантажено: {processor.is_loaded}")
-    # print(f"Інфо: {processor.get_image_info()}")
+    # Створення тестового процесора
+    processor = create_test_processor()
+    print(f"Тестовий процесор створено: {processor.working_image.width}×{processor.working_image.height}")
     
-    print("Модуль ImageProcessor готовий до використання")
+    # Тест розрахунків
+    test_points = [
+        (400, 300),  # Центр
+        (450, 300),  # Схід
+        (400, 250),  # Північ
+        (350, 350),  # Південний захід
+    ]
+    
+    for x, y in test_points:
+        analysis = processor.process_click(x, y)
+        print(f"Точка ({x}, {y}): Азимут={analysis.azimuth:.1f}°, Дальність={analysis.range_value:.1f}")
+    
+    print("=== Тестування завершено ===")
