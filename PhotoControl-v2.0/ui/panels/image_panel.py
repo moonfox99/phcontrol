@@ -16,7 +16,19 @@ from ui.widgets.zoom_widget import ZoomWidget
 from core.image_processor import ImageProcessor, AnalysisPoint, GridSettings
 from core.constants import UI, GRID
 from translations.translator import get_translator, TranslationKeys
-
+try:
+    from PIL.ImageQt import ImageQt
+    IMAGEQT_AVAILABLE = True
+except ImportError:
+    try:
+        # Альтернативний імпорт для Python 3.13
+        import PIL.ImageQt as ImageQt_module
+        ImageQt = ImageQt_module.ImageQt
+        IMAGEQT_AVAILABLE = True
+    except ImportError:
+        IMAGEQT_AVAILABLE = False
+        ImageQt = None
+        print("⚠️ PIL.ImageQt недоступний - панель зображень обмежена")
 
 class ImagePanel(QWidget):
     """
@@ -322,97 +334,110 @@ class ImagePanel(QWidget):
         if not self.image_processor:
             return
         
-        print(f"Клік на зображенні: ({x}, {y})")
+        print(f"🖱️ Клік на зображенні: ({x}, {y})")
         
-        # Обробка кліку в процесорі
-        analysis_point = self.image_processor.process_click(x, y)
+        # Оновлення координат курсора
+        self.cursor_coords.setText(f"({x}, {y})")
         
-        if analysis_point:
-            # Оновлення відображення точки на ClickableLabel
-            self.clickable_label.set_analysis_point(x, y)
-            
-            # Показ зуму на короткий час
-            if self.zoom_widget:
-                self.zoom_widget.update_position(x, y)
-                self.zoom_widget.show_zoom_temporarily(2000)  # 2 секунди
-            
-            # Сигнал для зовнішніх слухачів
-            self.image_clicked.emit(x, y)
-            self.analysis_point_changed.emit(analysis_point)
-    
+        # Передача сигналу для обробки
+        self.image_clicked.emit(x, y)
+        
+        # Якщо в режимі встановлення центру
+        if self.current_mode == "center_setting":
+            self._on_center_moved(x, y)
+            self.set_mode("normal")
+        
+        # Якщо в режимі встановлення масштабу
+        elif self.current_mode == "scale_setting":
+            self._on_scale_edge_set(x, y)
+            self.set_mode("normal")
+        
+        # Звичайний режим - встановлення точки аналізу
+        else:
+            if self.image_processor:
+                # Розрахунок азимута та дальності
+                azimuth, range_km = self.image_processor.pixel_to_azimuth_range(x, y)
+                
+                # Створення точки аналізу
+                analysis_point = AnalysisPoint(x, y, azimuth, range_km)
+                
+                # Оновлення в процесорі
+                self.image_processor.set_analysis_point(analysis_point)
+                
+                # Передача сигналу
+                self.analysis_point_changed.emit(analysis_point)
+                
+                print(f"📊 Точка аналізу: азимут {azimuth:.1f}°, дальність {range_km:.1f}км")
+
     def _on_image_dragged(self, x: int, y: int):
         """Обробка перетягування на зображенні"""
-        if not self.image_processor or self.current_mode != "normal":
+        if not self.image_processor:
             return
         
-        # Обробка перетягування точки аналізу
-        analysis_point = self.image_processor.process_click(x, y)
-        
-        if analysis_point:
-            # Оновлення зуму в реальному часі
-            if self.zoom_widget and self.zoom_widget.is_visible:
-                self.zoom_widget.update_position(x, y)
-            
-            # Сигнал для оновлення UI
-            self.analysis_point_changed.emit(analysis_point)
-    
+        # Оновлення координат курсора під час перетягування
+        self.cursor_coords.setText(f"({x}, {y})")
+
     def _on_mouse_moved(self, x: int, y: int):
         """Обробка руху миші над зображенням"""
-        if not self.mouse_tracking_enabled or not self.image_processor:
+        if not self.image_processor:
             return
         
         # Оновлення координат курсора
         self.cursor_coords.setText(f"({x}, {y})")
         
-        # Розрахунок азимуту та дальності для tooltip
-        if self.tooltip_enabled:
-            azimuth, range_value = self.image_processor.calculate_azimuth_range(x, y)
-            
-            # Оновлення зуму якщо він видимий
-            if self.zoom_widget and self.zoom_widget.is_visible:
-                self.zoom_widget.update_position(x, y)
-            
-            # Tooltip з азимутальними даними
-            tooltip_text = (f"Координати: ({x}, {y})\n"
-                          f"Азимут: {azimuth:.1f}°\n"
-                          f"Дальність: {range_value:.1f} од.")
-            
-            # Показ tooltip з затримкою
-            QTimer.singleShot(500, lambda: self._show_tooltip(tooltip_text))
-    
+        # Оновлення позиції зум віджету
+        if self.zoom_widget and self.zoom_widget.isVisible():
+            self.zoom_widget.update_position(x, y)
+
     def _on_center_moved(self, x: int, y: int):
         """Обробка переміщення центру сітки"""
         if not self.image_processor:
             return
         
+        print(f"🎯 Новий центр сітки: ({x}, {y})")
+        
         # Оновлення центру в процесорі
         self.image_processor.set_grid_center(x, y)
         
-        # Оновлення зуму
-        if self.zoom_widget:
-            self.zoom_widget.update_position(x, y)
-        
-        # Сигнал для зовнішніх слухачів
+        # Передача сигналу
         self.grid_center_changed.emit(x, y)
         
-        print(f"Центр сітки переміщено: ({x}, {y})")
-    
+        # Оновлення відображення
+        self._update_grid_display(self.image_processor.grid_settings)
+
     def _on_scale_edge_set(self, x: int, y: int):
-        """Обробка встановлення точки масштабу"""
+        """Обробка встановлення краю масштабу"""
         if not self.image_processor:
             return
         
-        # Встановлення точки масштабу в процесорі
-        success = self.image_processor.set_scale_edge_point(x, y)
+        print(f"📏 Край масштабу встановлено: ({x}, {y})")
         
-        if success:
-            # Сигнал для зовнішніх слухачів
-            self.scale_edge_set.emit(x, y)
+        # Розрахунок нового масштабу на основі відстані від центру
+        center_x = self.image_processor.grid_settings.center_x
+        center_y = self.image_processor.grid_settings.center_y
+        
+        # Відстань від центру до краю в пікселях
+        distance_pixels = ((x - center_x) ** 2 + (y - center_y) ** 2) ** 0.5
+        
+        # Розрахунок масштабу (припускаємо що край відповідає одному кілометру)
+        if distance_pixels > 0:
+            scale = int(1000 / distance_pixels * 1000)  # масштаб 1:scale
             
-            # Автоматичне вимкнення режиму після встановлення
-            self.set_mode("normal")
+            # Обмеження масштабу до доступних значень
+            from core.constants import GRID
+            available_scales = GRID.AVAILABLE_SCALES
+            scale = min(available_scales, key=lambda x: abs(x - scale))
             
-            print(f"Точка масштабу встановлена: ({x}, {y})")
+            # Встановлення нового масштабу
+            self.image_processor.set_grid_scale(scale)
+            
+            # Передача сигналу
+            self.scale_edge_set.emit(x, y, scale)
+            
+            # Оновлення відображення
+            self._update_grid_display(self.image_processor.grid_settings)
+            
+            print(f"📏 Новий масштаб: 1:{scale}")
     
     def _show_tooltip(self, text: str):
         """Показ tooltip з азимутальною інформацією"""
@@ -424,20 +449,23 @@ class ImagePanel(QWidget):
     # ОБРОБКА ПОДІЙ ПРОЦЕСОРА
     # ===============================
     
-    def _on_image_processed(self, pil_image):
-        """Обробка сигналу про обробку зображення"""
-        self._display_image(pil_image)
-    
-    def _on_grid_settings_changed(self, grid_settings: GridSettings):
+    def _on_image_processed(self, processed_image):
+        """Обробка сигналу про оброблене зображення"""
+        if processed_image:
+            self._display_image(processed_image)
+            print("🖼️ Зображення оброблено та оновлено")
+
+    def _on_grid_settings_changed(self, grid_settings):
         """Обробка зміни налаштувань сітки"""
         self._update_grid_display(grid_settings)
-    
-    def _on_analysis_completed(self, analysis_point: AnalysisPoint):
-        """Обробка завершення аналізу точки"""
-        if self.clickable_label:
-            self.clickable_label.set_analysis_point(
-                analysis_point.x, analysis_point.y
-            )
+        print("🕸️ Налаштування сітки оновлено")
+
+    def _on_analysis_completed(self, analysis_point):
+        """Обробка завершення аналізу"""
+        if analysis_point:
+            print(f"✅ Аналіз завершено: {analysis_point}")
+            # Оновлення інформації про сітку
+            self.grid_info.setText(f"Азимут: {analysis_point.azimuth:.1f}° | Дальність: {analysis_point.range_km:.1f}км")
     
     def _update_grid_display(self, grid_settings: GridSettings):
         """Оновлення відображення сітки"""
@@ -730,5 +758,3 @@ if __name__ == "__main__":
             self.image_panel.grid_center_changed.connect(self.on_grid_center_changed)
             self.image_panel.scale_edge_set.connect(self.on_scale_edge_set)
             self.image_panel.mode_changed.connect(self.on_mode_changed)
-            
-            print("Image

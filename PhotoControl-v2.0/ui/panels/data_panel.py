@@ -5,7 +5,7 @@ PhotoControl v2.0 - Права панель даних
 """
 
 import os
-from typing import Optional, Dict, Any, Tuple
+from typing import Optional, Dict, Any, Tuple, List
 from PyQt5.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QLabel, QLineEdit,
                              QComboBox, QGroupBox, QFrame, QSpinBox, QCheckBox,
                              QFormLayout, QScrollArea, QPushButton, QButtonGroup)
@@ -14,7 +14,6 @@ from PyQt5.QtGui import QFont, QDoubleValidator, QIntValidator
 
 from core.constants import UI, GRID, ALBUM
 from translations.translator import get_translator, TranslationKeys, Language
-
 
 class DataPanel(QWidget):
     """
@@ -64,7 +63,7 @@ class DataPanel(QWidget):
         # Основний контейнер з прокруткою
         scroll_area = QScrollArea()
         scroll_area.setWidgetResizable(True)
-        scroll_area.setHorizontalScrollBarPolicy(Qt.ScrollBarNever)
+        scroll_area.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
         scroll_area.setVerticalScrollBarPolicy(Qt.ScrollBarAsNeeded)
         
         # Віджет з контентом
@@ -381,7 +380,7 @@ class DataPanel(QWidget):
             }
             QLineEdit:focus {
                 border-color: #80bdff;
-                box-shadow: 0 0 0 2px rgba(0, 123, 255, 0.25);
+                outline: 2px solid rgba(0, 123, 255, 0.25);
             }
             QComboBox {
                 border: 1px solid #ced4da;

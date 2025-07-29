@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
-Клікабельне зображення з підтримкою азимутальної сітки
-Основний віджет для відображення та взаємодії з зображеннями
+ClickableLabel - Доповнення відсутніх методів малювання
+Додаємо візуальні індикатори центру, точки аналізу та спеціальних режимів
 """
 
 from typing import Optional, Tuple
@@ -17,14 +17,7 @@ from ui.widgets.zoom_widget import ZoomWidget
 class ClickableLabel(QLabel):
     """
     Клікабельний віджет для відображення зображень з азимутальною сіткою
-    
-    Функціональність:
-    - Клік лівою кнопкою миші - встановлення точки аналізу
-    - Перетягування - зміщення точки аналізу
-    - Клавіатурне управління центром сітки (стрілки + Shift/Ctrl)
-    - Режими: звичайний, налаштування центру, налаштування масштабу
-    - Зум-функціональність з точними розмірами
-    - Візуальні підказки та індикатори
+    ДОПОВНЕНИЙ візуальними індикаторами
     """
     
     # Сигнали для взаємодії з головним вікном
@@ -54,6 +47,7 @@ class ClickableLabel(QLabel):
         # Координати сітки
         self.grid_center_x = 0
         self.grid_center_y = 0
+        self.scale_edge_point: Optional[Tuple[int, int]] = None
         
         # Зум-функціональність
         self.zoom_widget = ZoomWidget(self)
@@ -142,6 +136,7 @@ class ClickableLabel(QLabel):
         self.current_analysis_point = None
         self.grid_center_x = 0
         self.grid_center_y = 0
+        self.scale_edge_point = None
         
         self.setText("Відкрийте зображення або папку для початку")
         self.zoom_widget.hide()
@@ -155,293 +150,50 @@ class ClickableLabel(QLabel):
         qt_image = ImageQt(self.current_image)
         self.current_pixmap = QPixmap.fromImage(qt_image)
         
-        # Розрахунок масштабу для вміщення в віджет
-        self.image_scale_factor = self._calculate_scale_factor()
+        # Розрахунок масштабу для підгонки під віджет
+        widget_size = self.size()
+        pixmap_size = self.current_pixmap.size()
         
-        # Масштабування та відображення
-        if self.image_scale_factor != 1.0:
-            scaled_pixmap = self.current_pixmap.scaled(
-                int(self.current_image.width * self.image_scale_factor),
-                int(self.current_image.height * self.image_scale_factor),
-                Qt.KeepAspectRatio,
-                Qt.SmoothTransformation
+        scale_x = widget_size.width() / pixmap_size.width()
+        scale_y = widget_size.height() / pixmap_size.height()
+        self.image_scale_factor = min(scale_x, scale_y, 1.0)  # Не збільшуємо понад оригінал
+        
+        # Масштабування pixmap
+        if self.image_scale_factor < 1.0:
+            scaled_size = pixmap_size * self.image_scale_factor
+            self.current_pixmap = self.current_pixmap.scaled(
+                scaled_size, Qt.KeepAspectRatio, Qt.SmoothTransformation
             )
-            self.setPixmap(scaled_pixmap)
-        else:
-            self.setPixmap(self.current_pixmap)
         
-        # Оновлення зуму
-        self._update_zoom_widget()
-    
-    def _calculate_scale_factor(self) -> float:
-        """
-        Розрахунок коефіцієнта масштабування для вміщення зображення
-        
-        Returns:
-            Коефіцієнт масштабування (1.0 = оригінальний розмір)
-        """
-        if not self.current_image:
-            return 1.0
-        
-        # Доступний простір (з відступами)
-        available_width = self.width() - 20
-        available_height = self.height() - 20
-        
-        # Коефіцієнти масштабування по осях
-        scale_x = available_width / self.current_image.width
-        scale_y = available_height / self.current_image.height
-        
-        # Вибираємо менший коефіцієнт для вміщення
-        scale_factor = min(scale_x, scale_y, 1.0)  # Не збільшуємо більше оригіналу
-        
-        return scale_factor
+        # Встановлення pixmap
+        self.setPixmap(self.current_pixmap)
     
     # ===============================
-    # ОБРОБКА ПОДІЙ МИШІ
-    # ===============================
-    
-    def mousePressEvent(self, event):
-        """Обробка натискання кнопки миші"""
-        if event.button() == Qt.LeftButton and self.current_image:
-            # Конвертація координат віджету в координати зображення
-            image_coords = self._widget_to_image_coords(event.x(), event.y())
-            
-            if image_coords and self._is_click_on_image(event.x(), event.y()):
-                image_x, image_y = image_coords
-                
-                if self.center_setting_mode:
-                    # Режим налаштування центру сітки
-                    self._handle_center_setting(image_x, image_y)
-                elif self.scale_edge_mode:
-                    # Режим налаштування масштабу
-                    self._handle_scale_edge_setting(image_x, image_y)
-                else:
-                    # Звичайний режим - встановлення точки аналізу
-                    self._handle_analysis_point_setting(image_x, image_y, event)
-            
-            # Встановлюємо фокус для клавіатурного управління
-            self.setFocus()
-        
-        super().mousePressEvent(event)
-    
-    def mouseMoveEvent(self, event):
-        """Обробка руху миші"""
-        # Завжди відправляємо координати для підказок
-        image_coords = self._widget_to_image_coords(event.x(), event.y())
-        if image_coords:
-            self.mouse_moved.emit(image_coords[0], image_coords[1])
-        
-        # Оновлення зуму при русі миші
-        if self.current_image and self._is_click_on_image(event.x(), event.y()):
-            self._update_zoom_at_position(event.x(), event.y())
-        
-        # Перетягування точки аналізу
-        if (self.dragging and event.buttons() & Qt.LeftButton and 
-            not self.scale_edge_mode and not self.center_setting_mode):
-            
-            image_coords = self._widget_to_image_coords(event.x(), event.y())
-            if image_coords and self._is_click_on_image(event.x(), event.y()):
-                image_x, image_y = image_coords
-                self.current_analysis_point = (image_x, image_y)
-                self.dragged.emit(image_x, image_y)
-                self.update()  # Перемалювання для відображення нової позиції
-        
-        super().mouseMoveEvent(event)
-    
-    def mouseReleaseEvent(self, event):
-        """Обробка відпускання кнопки миші"""
-        if event.button() == Qt.LeftButton:
-            self.dragging = False
-        
-        super().mouseReleaseEvent(event)
-    
-    def _handle_center_setting(self, x: int, y: int):
-        """Обробка встановлення центру сітки"""
-        self.grid_center_x = x
-        self.grid_center_y = y
-        self.update()  # Перемалювання для відображення нового центру
-        print(f"Центр сітки встановлено: ({x}, {y})")
-    
-    def _handle_scale_edge_setting(self, x: int, y: int):
-        """Обробка встановлення точки масштабу"""
-        self.scale_edge_set.emit(x, y)
-        print(f"Точка масштабу встановлена: ({x}, {y})")
-    
-    def _handle_analysis_point_setting(self, x: int, y: int, event):
-        """Обробка встановлення точки аналізу"""
-        self.current_analysis_point = (x, y)
-        self.drag_start_pos = event.pos()
-        self.dragging = True
-        
-        self.clicked.emit(x, y)
-        self.update()  # Перемалювання для відображення точки
-    
-    # ===============================
-    # ОБРОБКА КЛАВІАТУРИ
-    # ===============================
-    
-    def keyPressEvent(self, event):
-        """Обробка натискання клавіш для управління центром сітки"""
-        if not self.current_image or not self.center_setting_mode:
-            super().keyPressEvent(event)
-            return
-        
-        key = event.key()
-        modifiers = event.modifiers()
-        
-        # Визначення швидкості переміщення
-        if modifiers & Qt.ControlModifier:
-            speed = self.move_speed_slow
-        elif modifiers & Qt.ShiftModifier:
-            speed = self.move_speed_fast
-        else:
-            speed = self.move_speed_normal
-        
-        # Обробка клавіш стрілок
-        move_actions = {
-            Qt.Key_Left: (-speed, 0),
-            Qt.Key_Right: (speed, 0),
-            Qt.Key_Up: (0, -speed),
-            Qt.Key_Down: (0, speed)
-        }
-        
-        if key in move_actions:
-            dx, dy = move_actions[key]
-            self._move_grid_center(dx, dy)
-            
-            # Запуск таймера для повторення
-            self.current_key_action = (dx, dy)
-            if not self.key_repeat_timer.isActive():
-                self.key_repeat_timer.start(100)  # Повторення кожні 100мс
-        
-        super().keyPressEvent(event)
-    
-    def keyReleaseEvent(self, event):
-        """Обробка відпускання клавіш"""
-        # Зупинка повторення клавіш
-        self.key_repeat_timer.stop()
-        self.current_key_action = None
-        
-        super().keyReleaseEvent(event)
-    
-    def _handle_key_repeat(self):
-        """Обробка повторення натиснутої клавіші"""
-        if self.current_key_action and self.center_setting_mode:
-            dx, dy = self.current_key_action
-            self._move_grid_center(dx, dy)
-    
-    def _move_grid_center(self, dx: int, dy: int):
-        """
-        Переміщення центру сітки на вказану відстань
-        
-        Args:
-            dx, dy: Зміщення в пікселях
-        """
-        new_x = max(0, min(self.current_image.width - 1, self.grid_center_x + dx))
-        new_y = max(0, min(self.current_image.height - 1, self.grid_center_y + dy))
-        
-        if new_x != self.grid_center_x or new_y != self.grid_center_y:
-            self.grid_center_x = new_x
-            self.grid_center_y = new_y
-            
-            self.center_moved.emit(new_x, new_y)
-            self.update()  # Перемалювання
-    
-    # ===============================
-    # РЕЖИМИ РОБОТИ
-    # ===============================
-    
-    def set_center_setting_mode(self, enabled: bool):
-        """
-        Увімкнення/вимкнення режиму налаштування центру сітки
-        
-        Args:
-            enabled: True для увімкнення режиму
-        """
-        self.center_setting_mode = enabled
-        
-        if enabled:
-            self.setCursor(Qt.CrossCursor)
-            self.setToolTip("Клікніть для встановлення центру сітки\n"
-                          "Стрілки: переміщення (Shift=швидко, Ctrl=повільно)")
-            print("Режим налаштування центру увімкнено")
-        else:
-            self.setCursor(Qt.ArrowCursor)
-            self.setToolTip("")
-            print("Режим налаштування центру вимкнено")
-        
-        self.update()
-    
-    def set_scale_edge_mode(self, enabled: bool):
-        """
-        Увімкнення/вимкнення режиму налаштування масштабу
-        
-        Args:
-            enabled: True для увімкнення режиму
-        """
-        self.scale_edge_mode = enabled
-        
-        if enabled:
-            self.setCursor(Qt.CrossCursor)
-            self.setToolTip("Клікніть на крайню точку для встановлення масштабу")
-            print("Режим налаштування масштабу увімкнено")
-        else:
-            self.setCursor(Qt.ArrowCursor)
-            self.setToolTip("")
-            print("Режим налаштування масштабу вимкнено")
-        
-        self.update()
-    
-    # ===============================
-    # ЗУМІНГ ТА ВІЗУАЛІЗАЦІЯ
-    # ===============================
-    
-    def _update_zoom_widget(self):
-        """Оновлення зум-віджету при зміні зображення"""
-        if self.current_image and hasattr(self, 'zoom_widget'):
-            self.zoom_widget.set_image(self.current_image)
-    
-    def _update_zoom_at_position(self, widget_x: int, widget_y: int):
-        """
-        Оновлення зуму для вказаної позиції
-        
-        Args:
-            widget_x, widget_y: Координати в віджеті
-        """
-        image_coords = self._widget_to_image_coords(widget_x, widget_y)
-        if image_coords and hasattr(self, 'zoom_widget'):
-            image_x, image_y = image_coords
-            self.zoom_widget.update_position(image_x, image_y)
-    
-    def show_zoom_at_center(self):
-        """Показати зум в області центру сітки"""
-        if self.current_image and hasattr(self, 'zoom_widget'):
-            self.zoom_widget.update_position(self.grid_center_x, self.grid_center_y)
-            self.zoom_widget.show_zoom()
-    
-    def hide_zoom(self):
-        """Сховати зум-віджет"""
-        if hasattr(self, 'zoom_widget'):
-            self.zoom_widget.hide_zoom()
-    
-    # ===============================
-    # МАЛЮВАННЯ ТА ВІЗУАЛІЗАЦІЯ
+    # МАЛЮВАННЯ ВІЗУАЛЬНИХ ІНДИКАТОРІВ (НОВІ МЕТОДИ)
     # ===============================
     
     def paintEvent(self, event):
-        """Перемалювання віджету з додатковими елементами"""
-        # Спочатку малюємо базове зображення
+        """
+        ДОПОВНЕНИЙ paintEvent з візуальними індикаторами
+        """
+        # Спочатку стандартне малювання QLabel
         super().paintEvent(event)
         
-        if not self.current_image:
+        # Якщо немає зображення, не малюємо індикатори
+        if not self.current_image or not self.current_pixmap:
             return
         
+        # Створюємо painter для додаткових елементів
         painter = QPainter(self)
         painter.setRenderHint(QPainter.Antialiasing)
         
         try:
             # Малювання центру сітки
             self._draw_grid_center(painter)
+            
+            # Малювання точки масштабу
+            if self.scale_edge_point:
+                self._draw_scale_edge_point(painter)
             
             # Малювання точки аналізу
             if self.current_analysis_point:
@@ -502,6 +254,27 @@ class ClickableLabel(QLabel):
         painter.setBrush(QBrush(QColor(255, 255, 255)))
         painter.drawEllipse(widget_x - 2, widget_y - 2, 4, 4)
     
+    def _draw_scale_edge_point(self, painter: QPainter):
+        """Малювання точки масштабу"""
+        if not self.scale_edge_point:
+            return
+        
+        x, y = self.scale_edge_point
+        widget_coords = self._image_to_widget_coords(x, y)
+        if not widget_coords:
+            return
+        
+        widget_x, widget_y = widget_coords
+        
+        # Синій квадрат для точки масштабу
+        painter.setPen(QPen(QColor(0, 0, 255), 2))
+        painter.setBrush(QBrush(QColor(0, 0, 255, 100)))
+        painter.drawRect(widget_x - 6, widget_y - 6, 12, 12)
+        
+        # Біла точка в центрі
+        painter.setBrush(QBrush(QColor(255, 255, 255)))
+        painter.drawEllipse(widget_x - 2, widget_y - 2, 4, 4)
+    
     def _draw_center_mode_indicators(self, painter: QPainter):
         """Додаткові індикатори для режиму налаштування центру"""
         # Підказка в лівому верхньому куті
@@ -518,27 +291,27 @@ class ClickableLabel(QLabel):
         font = QFont("Arial", 10, QFont.Bold)
         painter.setFont(font)
         painter.drawText(10, 20, "РЕЖИМ НАЛАШТУВАННЯ МАСШТАБУ")
-        painter.drawText(10, 35, "Клікніть на крайню точку відомої відстані")
+        painter.drawText(10, 35, "Клікніть на точку з відомою відстанню")
     
     # ===============================
-    # КОНВЕРТАЦІЯ КООРДИНАТ
+    # КООРДИНАТНІ ПЕРЕТВОРЕННЯ
     # ===============================
     
     def _widget_to_image_coords(self, widget_x: int, widget_y: int) -> Optional[Tuple[int, int]]:
         """
-        Конвертація координат віджету в координати зображення
+        Перетворення координат віджету в координати зображення
         
         Args:
             widget_x, widget_y: Координати в віджеті
             
         Returns:
-            Кортеж (image_x, image_y) або None якщо конвертація неможлива
+            Координати в зображенні або None якщо поза межами
         """
-        if not self.current_pixmap or not self.current_image:
+        if not self.current_pixmap:
             return None
         
-        # Отримуємо розміри відображуваного зображення
-        pixmap_rect = self.pixmap().rect()
+        # Отримуємо розміри для центрування
+        pixmap_rect = self.current_pixmap.rect()
         widget_rect = self.rect()
         
         # Розрахунок зміщення для центрування
@@ -549,16 +322,16 @@ class ClickableLabel(QLabel):
         pixmap_x = widget_x - x_offset
         pixmap_y = widget_y - y_offset
         
-        # Перевірка меж
+        # Перевірка чи координати в межах pixmap
         if (pixmap_x < 0 or pixmap_x >= pixmap_rect.width() or
             pixmap_y < 0 or pixmap_y >= pixmap_rect.height()):
             return None
         
-        # Конвертація в координати оригінального зображення
+        # Перетворення в координати оригінального зображення
         image_x = int(pixmap_x / self.image_scale_factor)
         image_y = int(pixmap_y / self.image_scale_factor)
         
-        # Обмеження межами зображення
+        # Обмеження координат зображення
         image_x = max(0, min(image_x, self.current_image.width - 1))
         image_y = max(0, min(image_y, self.current_image.height - 1))
         
@@ -566,23 +339,28 @@ class ClickableLabel(QLabel):
     
     def _image_to_widget_coords(self, image_x: int, image_y: int) -> Optional[Tuple[int, int]]:
         """
-        Конвертація координат зображення в координати віджету
+        Перетворення координат зображення в координати віджету
         
         Args:
             image_x, image_y: Координати в зображенні
             
         Returns:
-            Кортеж (widget_x, widget_y) або None якщо конвертація неможлива
+            Координати в віджеті або None якщо поза межами
         """
         if not self.current_pixmap or not self.current_image:
             return None
         
-        # Конвертація в координати pixmap
+        # Перевірка меж
+        if (image_x < 0 or image_x >= self.current_image.width or
+            image_y < 0 or image_y >= self.current_image.height):
+            return None
+        
+        # Масштабування до pixmap
         pixmap_x = int(image_x * self.image_scale_factor)
         pixmap_y = int(image_y * self.image_scale_factor)
         
         # Отримуємо розміри для центрування
-        pixmap_rect = self.pixmap().rect()
+        pixmap_rect = self.current_pixmap.rect()
         widget_rect = self.rect()
         
         # Розрахунок зміщення для центрування
@@ -595,17 +373,150 @@ class ClickableLabel(QLabel):
         
         return (widget_x, widget_y)
     
-    def _is_click_on_image(self, widget_x: int, widget_y: int) -> bool:
-        """
-        Перевірка чи клік знаходиться на зображенні
-        
-        Args:
-            widget_x, widget_y: Координати кліку в віджеті
+    # ===============================
+    # ОБРОБКА ПОДІЙ МИШІ
+    # ===============================
+    
+    def mousePressEvent(self, event):
+        """Обробка натискання миші"""
+        if event.button() == Qt.LeftButton and self.current_image:
+            widget_x, widget_y = event.x(), event.y()
+            image_coords = self._widget_to_image_coords(widget_x, widget_y)
             
-        Returns:
-            True якщо клік на зображенні
-        """
-        return self._widget_to_image_coords(widget_x, widget_y) is not None
+            if image_coords:
+                image_x, image_y = image_coords
+                
+                if self.center_setting_mode:
+                    # Режим налаштування центру - встановлюємо новий центр
+                    self.set_grid_center(image_x, image_y)
+                    self.center_moved.emit(image_x, image_y)
+                    
+                elif self.scale_edge_mode:
+                    # Режим налаштування масштабу - встановлюємо точку масштабу
+                    self.scale_edge_point = (image_x, image_y)
+                    self.scale_edge_set.emit(image_x, image_y)
+                    self.update()
+                    
+                else:
+                    # Звичайний режим - встановлюємо точку аналізу
+                    self.current_analysis_point = (image_x, image_y)
+                    self.clicked.emit(image_x, image_y)
+                    
+                    # Підготовка до можливого перетягування
+                    self.dragging = False
+                    self.drag_start_pos = event.pos()
+                    
+                self.update()
+        
+        super().mousePressEvent(event)
+    
+    def mouseMoveEvent(self, event):
+        """Обробка руху миші"""
+        if self.current_image:
+            widget_x, widget_y = event.x(), event.y()
+            image_coords = self._widget_to_image_coords(widget_x, widget_y)
+            
+            if image_coords:
+                image_x, image_y = image_coords
+                
+                # Сигнал руху миші для підказок
+                self.mouse_moved.emit(image_x, image_y)
+                
+                # Перетягування точки аналізу
+                if (event.buttons() & Qt.LeftButton and 
+                    self.current_analysis_point and 
+                    not self.center_setting_mode and 
+                    not self.scale_edge_mode):
+                    
+                    # Перевірка початку перетягування
+                    if not self.dragging:
+                        drag_distance = (event.pos() - self.drag_start_pos).manhattanLength()
+                        if drag_distance > 3:  # Мінімальна відстань для початку перетягування
+                            self.dragging = True
+                    
+                    if self.dragging:
+                        self.current_analysis_point = (image_x, image_y)
+                        self.dragged.emit(image_x, image_y)
+                        self.update()
+        
+        super().mouseMoveEvent(event)
+    
+    def mouseReleaseEvent(self, event):
+        """Обробка відпускання миші"""
+        if event.button() == Qt.LeftButton:
+            self.dragging = False
+        
+        super().mouseReleaseEvent(event)
+    
+    # ===============================
+    # КЛАВІАТУРНЕ УПРАВЛІННЯ
+    # ===============================
+    
+    def keyPressEvent(self, event):
+        """Обробка натискання клавіш"""
+        if not self.center_setting_mode or not self.current_image:
+            super().keyPressEvent(event)
+            return
+        
+        # Визначення швидкості руху
+        if event.modifiers() & Qt.ShiftModifier:
+            speed = self.move_speed_fast
+        elif event.modifiers() & Qt.ControlModifier:
+            speed = self.move_speed_slow
+        else:
+            speed = self.move_speed_normal
+        
+        # Рух центру сітки
+        dx, dy = 0, 0
+        if event.key() == Qt.Key_Left:
+            dx = -speed
+        elif event.key() == Qt.Key_Right:
+            dx = speed
+        elif event.key() == Qt.Key_Up:
+            dy = -speed
+        elif event.key() == Qt.Key_Down:
+            dy = speed
+        elif event.key() == Qt.Key_Escape:
+            # Вихід з режиму налаштування
+            self.set_center_setting_mode(False)
+            return
+        
+        if dx != 0 or dy != 0:
+            # Переміщення центру
+            new_x = max(0, min(self.grid_center_x + dx, self.current_image.width - 1))
+            new_y = max(0, min(self.grid_center_y + dy, self.current_image.height - 1))
+            
+            self.set_grid_center(new_x, new_y)
+            self.center_moved.emit(new_x, new_y)
+            
+            # Налаштування повторення клавіш
+            self.current_key_action = (dx, dy)
+            if not self.key_repeat_timer.isActive():
+                self.key_repeat_timer.start(50)  # Повторення кожні 50мс
+        
+        super().keyPressEvent(event)
+    
+    def keyReleaseEvent(self, event):
+        """Обробка відпускання клавіш"""
+        # Зупинка повторення клавіш
+        self.key_repeat_timer.stop()
+        self.current_key_action = None
+        super().keyReleaseEvent(event)
+    
+    def _handle_key_repeat(self):
+        """Обробка повторення клавіш"""
+        if not self.current_key_action or not self.current_image:
+            self.key_repeat_timer.stop()
+            return
+        
+        dx, dy = self.current_key_action
+        
+        # Переміщення центру
+        new_x = max(0, min(self.grid_center_x + dx, self.current_image.width - 1))
+        new_y = max(0, min(self.grid_center_y + dy, self.current_image.height - 1))
+        
+        self.set_grid_center(new_x, new_y)
+        self.center_moved.emit(new_x, new_y)
     
     # ===============================
     # ПУБЛІЧНІ МЕТОДИ ДЛЯ ЗОВНІШНЬОГО УПРАВЛІННЯ
@@ -629,6 +540,32 @@ class ClickableLabel(QLabel):
         self.current_analysis_point = None
         self.update()
     
+    def set_scale_edge_point(self, x: int, y: int):
+        """Встановлення точки масштабу програмно"""
+        if self.current_image:
+            self.scale_edge_point = (x, y)
+            self.update()
+    
+    def clear_scale_edge_point(self):
+        """Очищення точки масштабу"""
+        self.scale_edge_point = None
+        self.update()
+    
+    def set_center_setting_mode(self, enabled: bool):
+        """Увімкнення/вимкнення режиму налаштування центру"""
+        self.center_setting_mode = enabled
+        if enabled:
+            self.scale_edge_mode = False
+            self.setFocus()  # Для клавіатурного управління
+        self.update()
+    
+    def set_scale_edge_mode(self, enabled: bool):
+        """Увімкнення/вимкнення режиму налаштування масштабу"""
+        self.scale_edge_mode = enabled
+        if enabled:
+            self.center_setting_mode = False
+        self.update()
+    
     def get_current_analysis_point(self) -> Optional[Tuple[int, int]]:
         """Отримання поточної точки аналізу"""
         return self.current_analysis_point
@@ -637,6 +574,14 @@ class ClickableLabel(QLabel):
         """Отримання координат центру сітки"""
         return (self.grid_center_x, self.grid_center_y)
     
+    def get_scale_edge_point(self) -> Optional[Tuple[int, int]]:
+        """Отримання координат точки масштабу"""
+        return self.scale_edge_point
+    
+    def has_image(self) -> bool:
+        """Перевірка чи завантажено зображення"""
+        return self.current_image is not None
+    
     def resizeEvent(self, event):
         """Обробка зміни розміру віджету"""
         super().resizeEvent(event)
@@ -644,10 +589,6 @@ class ClickableLabel(QLabel):
         # Перерахунок масштабування при зміні розміру
         if self.current_image:
             self._update_display()
-    
-    def has_image(self) -> bool:
-        """Перевірка чи завантажено зображення"""
-        return self.current_image is not None
     
     def get_image_info(self) -> dict:
         """Отримання інформації про поточне зображення"""
@@ -660,27 +601,31 @@ class ClickableLabel(QLabel):
             'scale_factor': self.image_scale_factor,
             'grid_center': (self.grid_center_x, self.grid_center_y),
             'has_analysis_point': self.current_analysis_point is not None,
+            'has_scale_edge': self.scale_edge_point is not None,
             'center_mode': self.center_setting_mode,
             'scale_mode': self.scale_edge_mode
         }
 
 
+# ===============================
+# ТЕСТУВАННЯ
+# ===============================
+
 if __name__ == "__main__":
-    # Тестування віджету
     import sys
-    from PyQt5.QtWidgets import QApplication, QMainWindow, QVBoxLayout, QWidget, QPushButton
+    from PyQt5.QtWidgets import QApplication, QMainWindow, QVBoxLayout, QWidget, QPushButton, QHBoxLayout
     from PIL import Image, ImageDraw
     
     class TestWindow(QMainWindow):
         def __init__(self):
             super().__init__()
-            self.setWindowTitle("Тест ClickableLabel")
-            self.setGeometry(100, 100, 1000, 700)
+            self.setWindowTitle("Тест ClickableLabel з візуальними індикаторами")
+            self.setGeometry(100, 100, 1200, 800)
             
             # Центральний віджет
             central_widget = QWidget()
             self.setCentralWidget(central_widget)
-            layout = QVBoxLayout(central_widget)
+            layout = QHBoxLayout(central_widget)
             
             # Створення тестового зображення
             test_image = self.create_test_image()
@@ -690,9 +635,12 @@ if __name__ == "__main__":
             self.clickable_label.set_image(test_image)
             layout.addWidget(self.clickable_label)
             
-            # Кнопки управління
-            buttons_layout = QVBoxLayout()
+            # Панель кнопок
+            buttons_widget = QWidget()
+            buttons_widget.setFixedWidth(200)
+            buttons_layout = QVBoxLayout(buttons_widget)
             
+            # Кнопки управління
             self.center_mode_btn = QPushButton("Режим налаштування центру")
             self.center_mode_btn.setCheckable(True)
             self.center_mode_btn.toggled.connect(self.toggle_center_mode)
@@ -703,11 +651,29 @@ if __name__ == "__main__":
             self.scale_mode_btn.toggled.connect(self.toggle_scale_mode)
             buttons_layout.addWidget(self.scale_mode_btn)
             
-            clear_btn = QPushButton("Очистити точку аналізу")
-            clear_btn.clicked.connect(self.clickable_label.clear_analysis_point)
-            buttons_layout.addWidget(clear_btn)
+            clear_analysis_btn = QPushButton("Очистити точку аналізу")
+            clear_analysis_btn.clicked.connect(self.clickable_label.clear_analysis_point)
+            buttons_layout.addWidget(clear_analysis_btn)
             
-            layout.addLayout(buttons_layout)
+            clear_scale_btn = QPushButton("Очистити точку масштабу")
+            clear_scale_btn.clicked.connect(self.clickable_label.clear_scale_edge_point)
+            buttons_layout.addWidget(clear_scale_btn)
+            
+            set_center_btn = QPushButton("Встановити центр (400, 300)")
+            set_center_btn.clicked.connect(lambda: self.clickable_label.set_grid_center(400, 300))
+            buttons_layout.addWidget(set_center_btn)
+            
+            set_analysis_btn = QPushButton("Встановити точку аналізу")
+            set_analysis_btn.clicked.connect(lambda: self.clickable_label.set_analysis_point(300, 200))
+            buttons_layout.addWidget(set_analysis_btn)
+            
+            info_btn = QPushButton("Показати інформацію")
+            info_btn.clicked.connect(self.show_info)
+            buttons_layout.addWidget(info_btn)
+            
+            buttons_layout.addStretch()
+            
+            layout.addWidget(buttons_widget)
             
             # Підключення сигналів
             self.clickable_label.clicked.connect(self.on_image_clicked)
@@ -733,9 +699,14 @@ if __name__ == "__main__":
             draw.line([(center_x, 0), (center_x, height)], fill=(150, 150, 150), width=2)
             draw.line([(0, center_y), (width, center_y)], fill=(150, 150, 150), width=2)
             
-            # Коло в центрі
-            draw.ellipse([center_x-30, center_y-30, center_x+30, center_y+30], 
-                        outline=(100, 100, 100), width=2)
+            # Кола різних розмірів від центру
+            for radius in [50, 100, 150, 200]:
+                draw.ellipse([center_x-radius, center_y-radius, center_x+radius, center_y+radius], 
+                            outline=(100, 100, 100), width=1)
+            
+            # Додаємо текст з координатами
+            draw.text((10, 10), f"Розмір: {width} x {height}", fill=(0, 0, 0))
+            draw.text((10, 30), f"Центр: ({center_x}, {center_y})", fill=(0, 0, 0))
             
             return image
         
@@ -744,49 +715,68 @@ if __name__ == "__main__":
             self.clickable_label.set_center_setting_mode(checked)
             if checked:
                 self.scale_mode_btn.setChecked(False)
-                self.clickable_label.show_zoom_at_center()
+                print("Режим налаштування центру УВІМКНЕНО")
+                print("Використовуйте стрілки для переміщення центру")
             else:
-                self.clickable_label.hide_zoom()
+                print("Режим налаштування центру ВИМКНЕНО")
         
         def toggle_scale_mode(self, checked):
             """Перемикання режиму налаштування масштабу"""
             self.clickable_label.set_scale_edge_mode(checked)
             if checked:
                 self.center_mode_btn.setChecked(False)
+                print("Режим налаштування масштабу УВІМКНЕНО")
+                print("Клікніть на точку з відомою відстанню")
+            else:
+                print("Режим налаштування масштабу ВИМКНЕНО")
         
         def on_image_clicked(self, x, y):
             """Обробка кліку на зображенні"""
-            print(f"Клік на зображенні: ({x}, {y})")
+            print(f"🖱️  Клік на зображенні: ({x}, {y})")
         
         def on_image_dragged(self, x, y):
             """Обробка перетягування на зображенні"""
-            print(f"Перетягування: ({x}, {y})")
+            print(f"🔄 Перетягування: ({x}, {y})")
         
         def on_mouse_moved(self, x, y):
             """Обробка руху миші"""
-            # Не виводимо кожен рух, щоб не засмічувати консоль
-            pass
+            # Показуємо координати в заголовку вікна
+            self.setWindowTitle(f"Тест ClickableLabel - Координати: ({x}, {y})")
         
         def on_center_moved(self, x, y):
             """Обробка переміщення центру"""
-            print(f"Центр переміщено: ({x}, {y})")
+            print(f"🎯 Центр переміщено: ({x}, {y})")
         
         def on_scale_edge_set(self, x, y):
             """Обробка встановлення точки масштабу"""
-            print(f"Точка масштабу встановлена: ({x}, {y})")
+            print(f"📏 Точка масштабу встановлена: ({x}, {y})")
+        
+        def show_info(self):
+            """Показ інформації про поточний стан"""
+            info = self.clickable_label.get_image_info()
+            print("\n=== ІНФОРМАЦІЯ ПРО СТАН ===")
+            for key, value in info.items():
+                print(f"{key}: {value}")
+            print("=" * 30)
     
     # Запуск тесту
     app = QApplication(sys.argv)
     window = TestWindow()
     window.show()
     
-    print("=== Тестування ClickableLabel ===")
-    print("Функції для тестування:")
-    print("1. Клік лівою кнопкою - встановлення точки аналізу")
-    print("2. Перетягування - переміщення точки аналізу")
-    print("3. Кнопка 'Режим налаштування центру' - клавіші стрілок для переміщення")
-    print("4. Кнопка 'Режим налаштування масштабу' - клік для встановлення краю")
-    print("5. Shift+стрілки - швидке переміщення")
-    print("6. Ctrl+стрілки - повільне переміщення")
+    print("=== Тестування ClickableLabel з ВІЗУАЛЬНИМИ ІНДИКАТОРАМИ ===")
+    print("\nФункції для тестування:")
+    print("1. 🖱️  Клік лівою кнопкою - встановлення точки аналізу (ЧЕРВОНЕ КОЛО)")
+    print("2. 🔄 Перетягування - переміщення точки аналізу")
+    print("3. 🎯 Кнопка 'Режим центру' + стрілки = переміщення ЗЕЛЕНОГО ХРЕСТИКА")
+    print("4. 📏 Кнопка 'Режим масштабу' + клік = встановлення СИНЬОГО КВАДРАТА")
+    print("5. ⚡ Shift+стрілки = швидке переміщення центру")
+    print("6. 🐌 Ctrl+стрілки = повільне переміщення центру")
+    print("7. 🚪 Esc = вихід з режиму")
+    print("\nВізуальні індикатори:")
+    print("🟢 ЗЕЛЕНИЙ ХРЕСТИК = центр азимутальної сітки")
+    print("🔴 ЧЕРВОНЕ КОЛО = точка аналізу цілі")
+    print("🔵 СИНІЙ КВАДРАТ = точка масштабу")
+    print("🔴 ЧЕРВОНИЙ ХРЕСТИК = центр в режимі налаштування")
     
     sys.exit(app.exec_())

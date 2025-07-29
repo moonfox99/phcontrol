@@ -560,7 +560,17 @@ def print_constants_summary():
         for error in validation_errors:
             print(f"  - {error}")
 
+class WORD_STYLES:
+    """Константи стилів Word документів"""
+    DEFAULT_FONT = "Arial"
+    TITLE_FONT_SIZE = 14
+    NORMAL_FONT_SIZE = 11
 
+class TEMPLATE_DEFAULTS:
+    """Значення за замовчуванням для шаблонів"""
+    DOCUMENT_DATE = ""
+    UNIT_INFO = "Підрозділ"
+    COMMANDER_RANK = "Командир"
 # ===============================
 # ТЕСТУВАННЯ КОНСТАНТ
 # ===============================

@@ -82,39 +82,29 @@ class ImageProcessor(QObject):
     # ЗАВАНТАЖЕННЯ ТА ІНІЦІАЛІЗАЦІЯ
     # ===============================
     
-    def load_image(self, image_path: str) -> bool:
-        """
-        Завантаження зображення з файлу
-        
-        Args:
-            image_path: Шлях до файлу зображення
-            
-        Returns:
-            True якщо завантаження успішне
-        """
+    def load_image(self, image_path: str):
+        """Завантаження зображення з файлу"""
         try:
-            self.image_path = image_path
+            from PIL import Image
+            
+            # Завантаження зображення
             self.original_image = Image.open(image_path)
             self.working_image = self.original_image.copy()
-            
-            # Автоматичне виправлення орієнтації EXIF
-            self._auto_fix_orientation()
+            self.image_path = image_path
             
             # Ініціалізація центру сітки
-            self._initialize_grid_center()
+            if hasattr(self, '_initialize_grid_center'):
+                self._initialize_grid_center()
+            else:
+                # Fallback - встановлюємо центр у середину зображення
+                self.grid_settings.center_x = self.working_image.width // 2
+                self.grid_settings.center_y = self.working_image.height // 2
             
-            # Конвертація в RGB якщо потрібно
-            self._ensure_rgb_format()
-            
-            self.is_modified = False
-            print(f"Зображення завантажено: {os.path.basename(image_path)}")
-            print(f"Розмір: {self.working_image.width}x{self.working_image.height}")
-            
-            self.image_processed.emit(self.working_image)
+            print(f"🖼️ ImageProcessor: зображення завантажено {self.working_image.size}")
             return True
             
         except Exception as e:
-            print(f"Помилка завантаження зображення: {e}")
+            print(f"❌ ImageProcessor.load_image помилка: {e}")
             return False
     
     def _auto_fix_orientation(self):

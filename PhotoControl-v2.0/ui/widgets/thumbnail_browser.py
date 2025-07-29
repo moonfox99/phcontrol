@@ -11,9 +11,12 @@ from PyQt5.QtWidgets import (QWidget, QVBoxLayout, QScrollArea, QLabel,
 from PyQt5.QtCore import Qt, pyqtSignal, QSize, QTimer
 from PyQt5.QtGui import QPixmap, QPainter, QPen, QBrush, QColor, QFont
 from PIL import Image
-from PIL.ImageQt import ImageQt
-
-
+try:
+    from PIL.ImageQt import ImageQt
+    IMAGEQT_AVAILABLE = True
+except ImportError:
+    IMAGEQT_AVAILABLE = False
+    ImageQt = None
 class ThumbnailItem(QLabel):
     """
     Окремий елемент мініатюри з індикатором стану обробки
@@ -77,6 +80,43 @@ class ThumbnailItem(QLabel):
             }
         """
     
+    def clear_thumbnails(self):
+        """Очищення всіх мініатюр"""
+        # Видалення всіх дочірніх віджетів
+        if hasattr(self, 'scroll_widget') and self.scroll_widget:
+            layout = self.scroll_widget.layout()
+            if layout:
+                while layout.count():
+                    child = layout.takeAt(0)
+                    if child.widget():
+                        child.widget().deleteLater()
+
+    def load_folder(self, folder_path: str):
+        """Завантаження папки з зображеннями"""
+        try:
+            # Очищуємо попередні мініатюри
+            self.clear_thumbnails()
+            
+            # Пошук зображень
+            image_extensions = ('.jpg', '.jpeg', '.png', '.bmp', '.gif', '.tiff', '.tif')
+            image_files = []
+            
+            for filename in os.listdir(folder_path):
+                if filename.lower().endswith(image_extensions):
+                    full_path = os.path.join(folder_path, filename)
+                    image_files.append(full_path)
+            
+            image_files.sort()
+            
+            # Додавання мініатюр
+            for image_path in image_files:
+                self.add_thumbnail(image_path)
+            
+            print(f"📁 ThumbnailBrowser: завантажено {len(image_files)} мініатюр")
+            
+        except Exception as e:
+            print(f"❌ Помилка ThumbnailBrowser.load_folder: {e}")
+
     def _load_thumbnail(self):
         """Завантаження та створення мініатюри зображення"""
         try:
